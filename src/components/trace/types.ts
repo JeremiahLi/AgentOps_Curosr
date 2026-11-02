@@ -1,4 +1,5 @@
 import type { SessionFacts } from "@/lib/engine/ingest/session-facts";
+import type { SessionDiagnosis } from "@/lib/engine/ingest/session-diagnosis";
 
 export interface SpanNode {
   id: string;
@@ -94,6 +95,8 @@ export interface SessionDetail {
   childCount: number;
   /** 单次运行的过程事实。旧响应可能缺这个字段 */
   facts?: SessionFacts;
+  /** 由过程事实写成的诊断。旧响应可能缺这个字段 */
+  diagnosis?: SessionDiagnosis;
   /** 会话级指标（服务端按 Span 现算，与 header chip 同源） */
   metrics?: SessionMetrics;
   /** 同 Agent 近 30 天的中位数 / P90；null 表示基准计算失败 */

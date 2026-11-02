@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { diagnoseSession } from "@/lib/engine/ingest/session-diagnosis";
 import { analyzeSessionFacts } from "@/lib/engine/ingest/session-facts";
 import { isFailedStatus, normalizeSpanRecord } from "@/lib/engine/ingest/span-record";
 import { getSessionBaseline } from "@/lib/engine/stats/session-board";
@@ -128,6 +129,9 @@ export async function GET(
     return null;
   });
 
+  const facts = analyzeSessionFacts(allSpans);
+  const diagnosis = diagnoseSession(facts, allSpans);
+
   const result = {
     id: session.id,
     projectId: session.projectId,
@@ -161,7 +165,9 @@ export async function GET(
      * 单次运行的过程事实：已恢复的失败只作背景，未恢复 / 循环 / 模型或回答失败 / 未交付才是异常。
      * 由 span 现算，历史行里 status=error 或空 error 也会在这里补齐，不依赖是否跑过回填。
      */
-    facts: analyzeSessionFacts(allSpans),
+    facts,
+    /** 根因和先检查什么。只诊断未恢复的失败；已恢复的留在 facts 里 */
+    diagnosis,
     /**
      * 会话级指标：全部由内存里的 allSpans 现算，与详情页 header 的 LLM/Tool chip 完全同源，
      * 不依赖 Session.llmCallCount 是否已回填。

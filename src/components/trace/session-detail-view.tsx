@@ -418,9 +418,10 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
         </div>
       </header>
 
-      {detail.facts && (
+      {(detail.diagnosis || detail.facts) && (
         <SessionFactsBar
           facts={detail.facts}
+          diagnosis={detail.diagnosis}
           onSelectSpan={(spanId) => {
             setSelectedSpanId(spanId);
             setFocusSpanId(spanId);
