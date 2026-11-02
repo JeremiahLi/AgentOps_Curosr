@@ -2,9 +2,11 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronDown, ExternalLink } from "lucide-react";
+import { ChevronDown, ExternalLink, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentIssue, IssueSeverity } from "@/lib/engine/stats/agent-detail";
+import type { AgentGuide } from "@/lib/engine/ingest/issue-guide";
+import type { IssueNote, NoteLayer } from "@/lib/engine/ingest/issue-note";
 
 const SEVERITY_META: Record<IssueSeverity, { label: string; bar: string; text: string; badge: string }> = {
   critical: {
@@ -36,11 +38,44 @@ const KIND_LABEL: Record<string, string> = {
   data_quality: "数据质量",
 };
 
+const LAYER_LABEL: Record<NoteLayer, string> = {
+  prompt: "提示词",
+  skill: "skill",
+  tool: "工具参数",
+  env: "运行环境",
+  insufficient: "证据不足",
+};
+
+const ANALYZED = new Set(["tool_failure", "error_cluster", "slow_span"]);
+
+function Conclusion({ note }: { note: IssueNote }) {
+  return (
+    <div className="mt-1.5 rounded-md bg-background/80 px-2 py-1.5 text-[12px] leading-5">
+      <p>
+        <span className="font-medium">分析：</span>
+        {note.caused}
+      </p>
+      {note.layer !== "insufficient" ? (
+        <p className="text-muted-foreground">改动面：{LAYER_LABEL[note.layer]}</p>
+      ) : null}
+      {note.where ? <p className="font-mono text-[11px] text-muted-foreground">依据：{note.where}</p> : null}
+    </div>
+  );
+}
+
 /**
- * 问题列表：问题 → 证据 → 建议 → 链路深链。
- * 默认只展开前 3 条，避免一屏全是红色警告把真正严重的淹掉。
+ * 问题列表：事实 → 模型分析 → 链路。
+ * 事实随详情接口马上出现。分析按证据哈希缓存，打开页面不会重复调用。
  */
-export function AgentIssueList({ issues }: { issues: AgentIssue[] }) {
+export function AgentIssueList({
+  issues,
+  guide,
+  guideFailed,
+}: {
+  issues: AgentIssue[];
+  guide: AgentGuide | null;
+  guideFailed: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   if (issues.length === 0) {
@@ -85,8 +120,23 @@ export function AgentIssueList({ issues }: { issues: AgentIssue[] }) {
                   ))}
                 </ul>
                 <p className="mt-1 text-[11px] leading-relaxed text-foreground/70">
-                  建议：{issue.suggestion}
+                  先检查：{issue.suggestion}
                 </p>
+                {ANALYZED.has(issue.kind) && guide?.notes[issue.id] ? (
+                  <Conclusion note={guide.notes[issue.id]} />
+                ) : null}
+                {ANALYZED.has(issue.kind) && !guide && !guideFailed ? (
+                  <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    正在对照这条证据生成分析…
+                  </p>
+                ) : null}
+                {ANALYZED.has(issue.kind) && guideFailed ? (
+                  <p className="mt-1.5 text-[11px] text-destructive">分析结论没有加载出来。</p>
+                ) : null}
+                {ANALYZED.has(issue.kind) && guide && !guide.notes[issue.id] && guide.pending > 0 ? (
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">分析还在排队，刷新这一页会继续。</p>
+                ) : null}
                 {issue.links.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
                     {issue.links.map((l) => (

@@ -33,6 +33,8 @@ model Agent {
   releases  Release[]
   issues    Issue[]
   regressionCases RegressionCase[]
+  /// 慢调用等非问题库条目的模型结论缓存。JSON：slot -> { hash, note }
+  analysisCache String @default("")
 }
 
 model Project {

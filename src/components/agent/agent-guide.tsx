@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import type { AgentGuide, GuideItem } from "@/lib/engine/ingest/issue-guide";
@@ -33,33 +32,12 @@ function ItemLine({ item }: { item: GuideItem }) {
   );
 }
 
-export function AgentGuidePanel({ agentName }: { agentName: string }) {
-  const [guide, setGuide] = useState<AgentGuide | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/dashboard/agents/${encodeURIComponent(agentName)}/guide`)
-      .then((response) => {
-        if (!response.ok) throw new Error("guide failed");
-        return response.json();
-      })
-      .then((data: AgentGuide) => {
-        if (!cancelled) setGuide(data);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [agentName]);
-
+export function AgentGuidePanel({ guide, failed }: { guide: AgentGuide | null; failed: boolean }) {
   return (
     <section className="rounded-lg border border-border/70 bg-card px-4 py-3">
       <h2 className="text-sm font-medium">开发指引</h2>
       <p className="mt-0.5 text-[12px] text-muted-foreground">
-        只汇总已打开和已确认的问题。模型结论必须引用证据原文，打不开的句子会被丢掉。
+        模型只根据每条问题的证据写结论，依据必须是原文里的句子。
       </p>
       {guide === null && !failed ? (
         <p className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground">
@@ -68,12 +46,11 @@ export function AgentGuidePanel({ agentName }: { agentName: string }) {
         </p>
       ) : failed ? (
         <p className="mt-3 text-[13px] text-destructive">开发指引没有加载出来。</p>
-      ) : guide?.blocked ? (
-        <p className="mt-3 text-[13px]">{guide.blockedReason}</p>
-      ) : guide && guide.groups.length === 0 ? (
+      ) : guide && guide.groups.length === 0 && !guide.blocked ? (
         <p className="mt-3 text-[13px] text-muted-foreground">当前没有可以指导改动的已打开问题。</p>
       ) : (
         <div className="mt-3 space-y-3">
+          {guide?.blocked ? <p className="text-[13px]">{guide.blockedReason}</p> : null}
           {guide?.groups.map((group) => (
             <div key={group.layer}>
               <h3 className="text-[12px] font-medium text-muted-foreground">{LAYER_LABEL[group.layer]}</h3>

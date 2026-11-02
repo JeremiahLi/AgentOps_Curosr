@@ -22,6 +22,7 @@ import {
 } from "@/lib/format";
 import { RANGE_OPTIONS, type StatsRange } from "@/lib/engine/stats/range";
 import type { AgentDetail } from "@/lib/engine/stats/agent-detail";
+import type { AgentGuide } from "@/lib/engine/ingest/issue-guide";
 import { cn } from "@/lib/utils";
 
 /**
@@ -50,6 +51,8 @@ export default function AgentDetailPage() {
   const [range, setRange] = useState<StatsRange>("30d");
   const [granularity, setGranularity] = useState<Granularity>("day");
   const [data, setData] = useState<AgentDetail | null>(null);
+  const [guide, setGuide] = useState<AgentGuide | null>(null);
+  const [guideFailed, setGuideFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -85,6 +88,26 @@ export default function AgentDetailPage() {
       cancelled = true;
     };
   }, [agentName, range, granularity]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setGuide(null);
+    setGuideFailed(false);
+    fetch(`/api/dashboard/agents/${encodeURIComponent(agentName)}/guide?range=${range}`)
+      .then((response) => {
+        if (!response.ok) throw new Error("guide failed");
+        return response.json();
+      })
+      .then((payload: AgentGuide) => {
+        if (!cancelled) setGuide(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setGuideFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentName, range]);
 
   if (notFound) {
     return (
@@ -202,7 +225,7 @@ export default function AgentDetailPage() {
       </div>
 
       {/* 开发指引：已打开问题的改动面 */}
-      <AgentGuidePanel agentName={agentName} />
+      <AgentGuidePanel guide={guide} failed={guideFailed} />
 
       {/* 问题列表 + 工具榜 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -214,7 +237,7 @@ export default function AgentDetailPage() {
             </span>
           </CardHeader>
           <CardContent className="pt-3">
-            <AgentIssueList issues={data.issues} />
+            <AgentIssueList issues={data.issues} guide={guide} guideFailed={guideFailed} />
           </CardContent>
         </Card>
 
@@ -357,7 +380,7 @@ export default function AgentDetailPage() {
           <CardHeader className="flex-row items-baseline justify-between space-y-0 border-b border-border/60 pb-2.5">
             <CardTitle>最慢 span</CardTitle>
             <span className="text-[11px] text-muted-foreground/80">
-              超过 span P95（{formatDuration(totals.p95Duration)}）的前 10 条
+              超过 span P95（{formatDuration(totals.p95Duration)}），同一次调用已合并
             </span>
           </CardHeader>
           <CardContent className="pt-2">
@@ -372,7 +395,13 @@ export default function AgentDetailPage() {
                     <span className="w-[92px] shrink-0 truncate font-mono text-[11px] text-muted-foreground">
                       {s.kind}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {s.name}
+                      {s.model ? <span className="ml-1 text-muted-foreground">{s.model}</span> : null}
+                      <span className="ml-1 text-muted-foreground">
+                        入 {formatTokens(s.inputTokens)} · 出 {formatTokens(s.outputTokens)}
+                      </span>
+                    </span>
                     {(s.status === "failed" || s.status === "error") && (
                       <span className="shrink-0 rounded-sm bg-destructive/10 px-1 text-[10px] text-destructive">
                         失败

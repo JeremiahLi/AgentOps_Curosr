@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { callLlmAsJson, getActiveLlmConfig } from "../experiment/judge-llm";
+import { loadSlowCallReport } from "../stats/slow-call";
 import {
   evidenceHash,
   groundIssueNote,
@@ -28,13 +29,28 @@ export interface AgentGuide {
   blockedReason: string;
   pending: number;
   groups: { layer: NoteLayer; items: GuideItem[] }[];
+  /** 按问题列表的 id 取结论。慢调用的 id 固定是 slow-span。 */
+  notes: Record<string, IssueNote>;
 }
 
 const LAYER_ORDER: NoteLayer[] = ["prompt", "skill", "tool", "env", "insufficient"];
 const CALL_CAP = 8;
 
-export async function buildAgentGuide(db: Db, agentName: string): Promise<AgentGuide | null> {
-  const agent = await db.agent.findUnique({ where: { name: agentName }, select: { id: true } });
+interface CacheSlot {
+  hash: string;
+  note: string;
+}
+
+export async function buildAgentGuide(
+  db: Db,
+  agentName: string,
+  startMs: number,
+  rangeKey: string,
+): Promise<AgentGuide | null> {
+  const agent = await db.agent.findUnique({
+    where: { name: agentName },
+    select: { id: true, analysisCache: true },
+  });
   if (!agent) return null;
   const issues = await db.issue.findMany({
     where: { agentId: agent.id, status: { in: ["open", "confirmed"] } },
@@ -50,9 +66,39 @@ export async function buildAgentGuide(db: Db, agentName: string): Promise<AgentG
     : [];
   const byId = new Map(spans.map((span) => [span.id, span]));
   const config = await getActiveLlmConfig();
-  let calls = 0;
+  const budget = { calls: 0 };
   let pending = 0;
   const items: GuideItem[] = [];
+  const notes: Record<string, IssueNote> = {};
+  let cacheRaw = agent.analysisCache || "";
+
+  const slow = await loadSlowCallReport(db, agent.id, startMs);
+  if (slow) {
+    const slot = `slow:${rangeKey}`;
+    const hashed = evidenceHash(slot, slow.corpus);
+    const cached = readCache(cacheRaw)[slot];
+    let note = cached?.hash === hashed ? readStoredNote(cached.note) : null;
+    if (note && note.grounded === false) note = null;
+    if (!note) {
+      const before = budget.calls;
+      note = await conclude(config, budget, slow.issue.title, slot, slow.corpus);
+      if (!note && before >= CALL_CAP) pending += 1;
+      if (note && note.grounded !== false) cacheRaw = await writeCache(db, agent.id, cacheRaw, slot, hashed, note);
+    }
+    if (note) {
+      notes["slow-span"] = note;
+      const link = slow.issue.links[0];
+      items.push({
+        issueId: "slow-span",
+        title: slow.issue.title,
+        signature: slot,
+        hitCount: 1,
+        sessionId: link?.sessionId || "",
+        spanId: link?.spanId || "",
+        note,
+      });
+    }
+  }
 
   for (const issue of issues) {
     const parts: string[] = [];
@@ -70,26 +116,23 @@ export async function buildAgentGuide(db: Db, agentName: string): Promise<AgentG
       if (isMissingErrorSignature(issue.signature) || corpus.trim().length < 12) {
         note = missingErrorNote();
       } else if (!config) {
-        note = {
-          where: "",
-          caused: "未配置裁判模型，只保留确定性诊断",
-          layer: "insufficient",
-          basis: "",
-          grounded: true,
-        };
-      } else if (calls >= CALL_CAP) {
+        note = unconfiguredNote();
+      } else if (budget.calls >= CALL_CAP) {
         pending += 1;
         continue;
       } else {
-        calls += 1;
-        note = await askNote(config, issue.title, issue.signature, corpus);
+        note = await conclude(config, budget, issue.title, issue.signature, corpus);
       }
-      await db.issue.update({
-        where: { id: issue.id },
-        data: { llmNote: serializeNote(note), llmNoteHash: hash },
-      });
+      if (note && note.grounded !== false) {
+        await db.issue.update({
+          where: { id: issue.id },
+          data: { llmNote: serializeNote(note), llmNoteHash: hash },
+        });
+      }
     }
 
+    if (!note) continue;
+    notes[issue.id] = note;
     const evidence = issue.evidence[0];
     items.push({
       issueId: issue.id,
@@ -102,23 +145,64 @@ export async function buildAgentGuide(db: Db, agentName: string): Promise<AgentG
     });
   }
 
-  const missing = items.filter((item) => isMissingErrorSignature(item.signature)).length;
-  const blocked = items.length > 0 && missing * 2 >= items.length;
-  if (blocked) {
-    return {
-      blocked: true,
-      blockedReason: `${missing} / ${items.length} 条已打开的问题没有错误文本。先补采集，不根据这些记录给 Agent 改法。`,
-      pending,
-      groups: [],
-    };
-  }
-
+  const failureItems = items.filter((item) => item.issueId !== "slow-span");
+  const missing = failureItems.filter((item) => isMissingErrorSignature(item.signature)).length;
+  const blocked = failureItems.length > 0 && missing * 2 >= failureItems.length;
   const groups = LAYER_ORDER.map((layer) => ({
     layer,
     items: items.filter((item) => item.note.layer === layer),
   })).filter((group) => group.items.length > 0);
 
-  return { blocked: false, blockedReason: "", pending, groups };
+  return {
+    blocked,
+    blockedReason: blocked
+      ? `${missing} / ${failureItems.length} 条已打开的失败问题没有错误文本。这些失败先补采集。慢调用仍按测到的模型和 token 分析。`
+      : "",
+    pending,
+    groups,
+    notes,
+  };
+}
+
+function unconfiguredNote(): IssueNote {
+  return {
+    where: "",
+    caused: "未配置裁判模型，下面只保留测到的事实",
+    layer: "insufficient",
+    basis: "",
+    grounded: true,
+  };
+}
+
+async function conclude(
+  config: Awaited<ReturnType<typeof getActiveLlmConfig>>,
+  budget: { calls: number },
+  title: string,
+  signature: string,
+  corpus: string,
+): Promise<IssueNote | null> {
+  if (!config) return unconfiguredNote();
+  if (budget.calls >= CALL_CAP) return null;
+  budget.calls += 1;
+  return askNote(config, title, signature, corpus);
+}
+
+function readCache(raw: string): Record<string, CacheSlot> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, CacheSlot>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeCache(db: Db, agentId: string, raw: string, slot: string, hash: string, note: IssueNote): Promise<string> {
+  const cache = readCache(raw);
+  cache[slot] = { hash, note: serializeNote(note) };
+  const next = JSON.stringify(cache);
+  await db.agent.update({ where: { id: agentId }, data: { analysisCache: next } });
+  return next;
 }
 
 async function askNote(
@@ -133,12 +217,12 @@ async function askNote(
         {
           role: "system",
           content: [
-            "你是 Agent 开发教练。只根据给定证据说明这一条问题。",
+            "你是 Agent 开发教练。只根据给定证据说明这一条问题，告诉开发者发生了什么、该改哪一层。",
             "输出 JSON：where, caused, layer, basis。",
             "layer 只能是 prompt、skill、tool、env、insufficient。",
-            "prompt 是提示词，skill 是技能说明，tool 是工具参数，env 是运行环境，insufficient 是证据不够。",
+            "prompt 是提示词，skill 是技能说明，tool 是工具参数，env 是运行环境或模型调用参数，insufficient 是证据不够。",
             "where 和 basis 必须是证据里的连续子串。证据不够时 layer 用 insufficient，where 和 basis 用空字符串。",
-            "不要编路径，不要建议重写整份提示词。caused 只用一句话。",
+            "不要编路径，不要建议重写整份提示词。caused 只用一句话，写清发生了什么。",
           ].join("\n"),
         },
         { role: "user", content: `问题：${title}\n签名：${signature}\n证据：\n${corpus}` },
@@ -147,10 +231,14 @@ async function askNote(
       { temperature: 0, maxTokens: 600 },
     );
     return groundIssueNote(raw, corpus);
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    const caused = /402|insufficient[_\s-]*balance/i.test(message)
+      ? "裁判模型余额不足，这次没有生成分析。先看上面测到的事实。"
+      : "裁判模型没有返回可用结论";
     return {
       where: "",
-      caused: "裁判模型没有返回可用结论",
+      caused,
       layer: "insufficient",
       basis: "",
       grounded: false,

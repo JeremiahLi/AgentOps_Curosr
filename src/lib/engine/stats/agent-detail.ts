@@ -5,6 +5,7 @@ import { scoreHealth, successRateOf, HEALTH_WINDOW_DAYS, type HealthScore } from
 import { getAgentBoard, type AgentBoardRow } from "./agent-board";
 import { SQL_BAD, SQL_FINISHED, SQL_PARTIAL } from "./session-outcome";
 import { buildBucketKeys, bucketLabel, type TrendGranularity } from "./trend";
+import { loadSlowCallReport, type SlowSpanView } from "./slow-call";
 
 /**
  * 单 Agent 下钻聚合（单一视角）。
@@ -117,15 +118,7 @@ export interface AgentDetail {
   topProjects: AgentTopItem[];
   topModels: AgentTopItem[];
   errorClusters: { pattern: string; count: number; sample: string; sessionId: string; spanId?: string }[];
-  slowSpans: {
-    id: string;
-    sessionId: string;
-    name: string;
-    kind: string;
-    duration: number;
-    status: string;
-    at: string;
-  }[];
+  slowSpans: SlowSpanView[];
   trends: AgentTrendBundle;
   /** 数据质量提示（如 answer 类失败但 error 为空） */
   dataNotes: string[];
@@ -426,31 +419,8 @@ export async function getAgentDetail(
   totals.p95Duration = p95Threshold;
   totals.p95SampleCount = Number(spanP95?.cnt ?? 0);
 
-  const slowSpanRows =
-    p95Threshold > 0
-      ? await prisma.$queryRaw<Record<string, unknown>[]>`
-          SELECT sp.id AS id, sp.sessionId AS sessionId, sp.name AS name, sp.kind AS kind,
-                 sp.duration AS duration, sp.status AS status, sp.createdAt AS createdAt
-          FROM Span sp
-          JOIN Session s ON sp.sessionId = s.id
-          WHERE s.agentId = ${agentId} AND s.startTime >= ${startMs} AND sp.duration > ${p95Threshold}
-          ORDER BY sp.duration DESC
-          LIMIT 10
-        `
-      : [];
-
-  const slowSpans = slowSpanRows.map((raw) => {
-    const r = normalizeRow(raw);
-    return {
-      id: String(r.id),
-      sessionId: String(r.sessionId),
-      name: String(r.name || "(未命名)"),
-      kind: String(r.kind),
-      duration: Number(r.duration),
-      status: String(r.status),
-      at: toIso(raw.createdAt) ?? "",
-    };
-  });
+  const slowReport = await loadSlowCallReport(prisma, agentId, startMs);
+  const slowSpans = slowReport?.spans ?? [];
 
   /* ---- 趋势 ---- */
   const trendParsed = trendRows.map((raw) => {
@@ -526,22 +496,9 @@ export async function getAgentDetail(
     });
   }
 
-  // 3) 慢调用
-  if (slowSpans.length > 0 && p95Threshold > 0) {
-    const worst = slowSpans[0];
-    issues.push({
-      id: "slow-span",
-      severity: worst.duration > p95Threshold * 2 ? "warning" : "info",
-      kind: "slow_span",
-      title: `最慢 span 达 P95 的 ${(worst.duration / p95Threshold).toFixed(1)} 倍`,
-      evidence: [
-        `span 耗时 P95 = ${fmtDuration(p95Threshold)}（样本 ${totals.p95SampleCount} 个）`,
-        `最慢：${worst.name} ${fmtDuration(worst.duration)}`,
-        `超过 P95 的 span 共 ${slowSpans.length} 个（仅展示前 10）`,
-      ],
-      suggestion: "检查该工具/命令的超时设置与输入规模；长尾往往来自单次超大输入或外部命令阻塞。",
-      links: slowSpans.slice(0, 3).map((s) => ({ sessionId: s.sessionId, spanId: s.id, label: `${s.name}` })),
-    });
+  // 3) 慢调用。证据是这次调用的模型和 token，分析结论由指引接口补上。
+  if (slowReport) {
+    issues.push(slowReport.issue);
   }
 
   // 4) 衰退
