@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTranscript } from "./trace-transcript";
+import { SessionFactsBar } from "./session-facts-bar";
 import { OutcomeBadge } from "./shared";
 import { SlidePanel } from "./slide-panel";
 import { SessionTreePanel } from "./session-tree-panel";
@@ -416,6 +417,21 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
           </Button>
         </div>
       </header>
+
+      {detail.facts && (
+        <SessionFactsBar
+          facts={detail.facts}
+          onSelectSpan={(spanId) => {
+            setSelectedSpanId(spanId);
+            setFocusSpanId(spanId);
+            setSelectedCall(null);
+            requestAnimationFrame(() => {
+              const el = document.querySelector(`[data-span-id="${CSS.escape(spanId)}"]`);
+              el?.scrollIntoView({ block: "center" });
+            });
+          }}
+        />
+      )}
 
       {/* 主体：三栏布局 */}
       <div className="flex flex-1 overflow-hidden">

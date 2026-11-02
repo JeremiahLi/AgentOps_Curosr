@@ -240,10 +240,10 @@ async function measure(
       ? prisma.$queryRaw<Record<string, unknown>[]>`
           SELECT s.agentId AS agentId,
                  COUNT(*) AS spans,
-                 COALESCE(SUM(CASE WHEN sp.status = 'failed' THEN 1 ELSE 0 END), 0) AS failedSpans,
+                 COALESCE(SUM(CASE WHEN sp.status IN ('failed', 'error') THEN 1 ELSE 0 END), 0) AS failedSpans,
                  COALESCE(SUM(CASE WHEN sp.kind = 'tool_call' THEN 1 ELSE 0 END), 0) AS toolCalls,
-                 COALESCE(SUM(CASE WHEN sp.kind = 'tool_call' AND sp.status = 'failed' THEN 1 ELSE 0 END), 0) AS toolFailed,
-                 COALESCE(SUM(CASE WHEN sp.kind = 'answer' AND sp.status = 'failed' THEN 1 ELSE 0 END), 0) AS answerFailed
+                 COALESCE(SUM(CASE WHEN sp.kind = 'tool_call' AND sp.status IN ('failed', 'error') THEN 1 ELSE 0 END), 0) AS toolFailed,
+                 COALESCE(SUM(CASE WHEN sp.kind = 'answer' AND sp.status IN ('failed', 'error') THEN 1 ELSE 0 END), 0) AS answerFailed
           FROM Span sp
           JOIN Session s ON sp.sessionId = s.id
           WHERE 1 = 1 ${timeCond}

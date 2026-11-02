@@ -13,6 +13,8 @@
  *    故引入 outcome 三态，详见 computeOutcome。
  */
 
+import { isFailedStatus } from "./span-record";
+
 export type SessionOutcome = "success" | "partial" | "failed" | "";
 
 export interface InSpanLike {
@@ -181,9 +183,10 @@ export function computeOutcome(spans: InSpanLike[]): {
   /** 过程失败总数（含工具级，保留为质量信号） */
   errors: number;
 } {
-  const errors = spans.filter((s) => s.status === "failed").length;
+  const failed = (s: InSpanLike) => isFailedStatus(s.status, s.isError);
+  const errors = spans.filter(failed).length;
   const fatalErrors = spans.filter(
-    (s) => s.status === "failed" && (s.kind === "answer" || s.kind === "llm_thinking"),
+    (s) => failed(s) && (s.kind === "answer" || s.kind === "llm_thinking"),
   ).length;
 
   if (spans.length === 0) return { outcome: "", fatalErrors, errors };
@@ -195,7 +198,7 @@ export function computeOutcome(spans: InSpanLike[]): {
   if (answers.length === 0) return { outcome: "failed", fatalErrors, errors };
 
   const last = answers[answers.length - 1];
-  const delivered = last.status !== "failed" && (last.output ?? "").trim().length > 0;
+  const delivered = !failed(last) && (last.output ?? "").trim().length > 0;
   if (!delivered) return { outcome: "failed", fatalErrors, errors };
 
   return { outcome: errors > 0 ? "partial" : "success", fatalErrors, errors };

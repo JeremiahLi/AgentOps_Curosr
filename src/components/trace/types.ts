@@ -1,3 +1,5 @@
+import type { SessionFacts } from "@/lib/engine/ingest/session-facts";
+
 export interface SpanNode {
   id: string;
   roundIndex: number;
@@ -90,6 +92,8 @@ export interface SessionDetail {
   parentSpanId: string | null;
   /** 直接子会话数 */
   childCount: number;
+  /** 单次运行的过程事实。旧响应可能缺这个字段 */
+  facts?: SessionFacts;
   /** 会话级指标（服务端按 Span 现算，与 header chip 同源） */
   metrics?: SessionMetrics;
   /** 同 Agent 近 30 天的中位数 / P90；null 表示基准计算失败 */

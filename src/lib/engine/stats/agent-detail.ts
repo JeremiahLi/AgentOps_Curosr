@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
+import { normalizeError } from "../ingest/normalize-error";
 import { normalizeRow } from "./range";
 import { scoreHealth, successRateOf, HEALTH_WINDOW_DAYS, type HealthScore } from "./health";
 import { getAgentBoard, type AgentBoardRow } from "./agent-board";
@@ -165,24 +166,6 @@ function fmtDuration(ms: number): string {
   return `${m}m${s}s`;
 }
 
-/**
- * 把一条 error 压成可聚类的模式串。
- * 不归一化的话，每条带绝对路径 / 行号的报错都会自成一簇（实测 bash 报错全带 E:\... 路径）。
- */
-export function normalizeError(raw: string): string {
-  return raw
-    .replace(/\r?\n/g, " ")
-    .replace(/[A-Za-z]:\\[^\s"']+/g, "<path>")
-    .replace(/\/(?:[\w.-]+\/)+[\w.-]+/g, "<path>")
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{12,}/gi, "<uuid>")
-    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*/g, "<time>")
-    .replace(/\b\d+(\.\d+)?\b/g, "<n>")
-    .replace(/["'`][^"'`]{0,80}["'`]/g, "<str>")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
-}
-
 const SEVERITY_ORDER: Record<IssueSeverity, number> = { critical: 0, warning: 1, info: 2 };
 
 /* -------------------------------- 主函数 -------------------------------- */
@@ -246,9 +229,9 @@ export async function getAgentDetail(
     // span 级失败统计（必须按所选区间算，不能复用 30 天口径）
     prisma.$queryRaw<Record<string, unknown>[]>`
       SELECT COUNT(*) AS spans,
-             COALESCE(SUM(CASE WHEN sp.status = 'failed' THEN 1 ELSE 0 END), 0) AS failedSpans,
+             COALESCE(SUM(CASE WHEN sp.status IN ('failed', 'error') THEN 1 ELSE 0 END), 0) AS failedSpans,
              COALESCE(SUM(CASE WHEN sp.kind = 'tool_call' THEN 1 ELSE 0 END), 0) AS toolCalls,
-             COALESCE(SUM(CASE WHEN sp.kind = 'tool_call' AND sp.status = 'failed' THEN 1 ELSE 0 END), 0) AS toolFailed
+             COALESCE(SUM(CASE WHEN sp.kind = 'tool_call' AND sp.status IN ('failed', 'error') THEN 1 ELSE 0 END), 0) AS toolFailed
       FROM Span sp
       JOIN Session s ON sp.sessionId = s.id
       WHERE s.agentId = ${agentId} AND s.startTime >= ${startMs}
@@ -263,7 +246,7 @@ export async function getAgentDetail(
     prisma.$queryRaw<Record<string, unknown>[]>`
       SELECT sp.name AS name,
              COUNT(*) AS calls,
-             COALESCE(SUM(CASE WHEN sp.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+             COALESCE(SUM(CASE WHEN sp.status IN ('failed', 'error') THEN 1 ELSE 0 END), 0) AS failed,
              CAST(COALESCE(AVG(NULLIF(sp.duration, 0)), 0) AS INTEGER) AS avgDuration
       FROM Span sp
       JOIN Session s ON sp.sessionId = s.id
@@ -278,7 +261,7 @@ export async function getAgentDetail(
              sp.error AS error, sp.duration AS duration, sp.createdAt AS createdAt
       FROM Span sp
       JOIN Session s ON sp.sessionId = s.id
-      WHERE s.agentId = ${agentId} AND s.startTime >= ${startMs} AND sp.status = 'failed'
+      WHERE s.agentId = ${agentId} AND s.startTime >= ${startMs} AND sp.status IN ('failed', 'error')
       ORDER BY sp.createdAt DESC
       LIMIT 500
     `,

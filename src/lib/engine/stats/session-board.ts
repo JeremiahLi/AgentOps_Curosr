@@ -356,7 +356,7 @@ function sessionMetricCte(
       JOIN User    u ON u.id = s.userId
       LEFT JOIN (
         SELECT sp.sessionId                                          AS sessionId,
-               SUM(CASE WHEN ${SQL_TOOL_KIND} AND sp.status = 'failed' THEN 1 ELSE 0 END) AS failedTools,
+               SUM(CASE WHEN ${SQL_TOOL_KIND} AND sp.status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failedTools,
                SUM(CASE WHEN sp.status IN ('failed','error') THEN 1 ELSE 0 END)           AS failedSpans,
                -- llmThinkDuration 覆盖 97%，缺失时用 span 总时长兜底
                SUM(CASE WHEN sp.kind = 'llm_thinking'

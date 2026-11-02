@@ -369,7 +369,7 @@ export default function AgentDetailPage() {
                       {s.kind}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{s.name}</span>
-                    {s.status === "failed" && (
+                    {(s.status === "failed" || s.status === "error") && (
                       <span className="shrink-0 rounded-sm bg-destructive/10 px-1 text-[10px] text-destructive">
                         失败
                       </span>

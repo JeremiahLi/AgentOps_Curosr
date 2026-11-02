@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { computeOutcome, deriveAgentName, deriveTitle, workspaceLabel } from "@/lib/engine/ingest/derive";
+import { isFailedStatus, normalizeSpanRecord } from "@/lib/engine/ingest/span-record";
 
 /** 无任何线索时使用的框架名兜底（也是 Agent.framework 的默认值，不要与实例名混用） */
 const FALLBACK_AGENT_NAME = "pi-coding-agent";
@@ -35,6 +36,13 @@ export async function POST(request: Request) {
       toolCallId?: string | null;
       toolName?: string | null;
       isError?: boolean;
+      /** 采集端直接给的错误摘要；缺省时失败 span 用 output / details 兜底 */
+      error?: string | null;
+      /** 会话内父 span。缺省不覆盖已入库的值 */
+      parentId?: string | null;
+      parentSpanId?: string | null;
+      branchId?: string | null;
+      isForkPoint?: boolean;
       duration?: number | null;
       llmThinkDuration?: number | null;
       agentReplyDuration?: number | null;
@@ -178,42 +186,93 @@ function toIntOr(v: unknown, fallback: number): number {
     let insertedNew = 0;
     let updated = 0;
     if (inSpans.length > 0) {
-      // 构造 span 数据
-      const data = inSpans.map((s) => ({
-        id: s.spanId || crypto.randomUUID(),
-        sessionId: sessionID,
-        roundIndex: toIntOr(s.roundIndex, 0),
-        turnId: toIntOr(s.turnId, 0),
-        kind: s.kind || "user",
-        name: s.name || "",
-        status: s.status || "success",
-        startTime: s.createdAt
-          ? Math.floor(new Date(s.createdAt).getTime() / 1000) || 0
-          : 0,
-        duration: toIntOr(s.duration, 0),
-        inputTokens: toIntOr(s.tokens?.input, 0),
-        outputTokens: toIntOr(s.tokens?.output, 0),
-        cacheReadTokens: toIntOr(s.tokens?.cacheRead, 0),
-        cacheWriteTokens: toIntOr(s.tokens?.cacheWrite, 0),
-        totalTokens: toIntOr(s.tokens?.total, 0),
-        model: s.model ?? null,
-        input: s.input ?? null,
-        output: s.output ?? null,
-        error: s.isError ? (s.output ?? null) : null,
-        llmThinkDuration: s.llmThinkDuration ?? null,
-        agentReplyDuration: s.agentReplyDuration ?? null,
-        toolDuration: s.toolDuration ?? null,
-        details: s.details ?? null,
-        content: s.content ?? null,
-      }));
-
-      // 查出已存在的 span id
-      const incomingIds = data.map((d) => d.id);
-      const existing = await prisma.span.findMany({
-        where: { id: { in: incomingIds } },
-        select: { id: true },
+      // 失败状态收成 failed，并保证 error 非空。父 span / 分支缺省时不覆盖库内已有值。
+      const prepared = inSpans.map((s) => {
+        const norm = normalizeSpanRecord({
+          status: s.status,
+          isError: s.isError,
+          error: s.error,
+          output: s.output,
+          details: s.details,
+          kind: s.kind,
+        });
+        const parentRaw =
+          (typeof s.parentId === "string" && s.parentId.trim()) ||
+          (typeof s.parentSpanId === "string" && s.parentSpanId.trim()) ||
+          "";
+        const branchRaw = typeof s.branchId === "string" ? s.branchId.trim() : "";
+        return {
+          id: s.spanId || crypto.randomUUID(),
+          sessionId: sessionID,
+          roundIndex: toIntOr(s.roundIndex, 0),
+          turnId: toIntOr(s.turnId, 0),
+          kind: s.kind || "user",
+          name: s.name || "",
+          status: norm.status,
+          startTime: s.createdAt
+            ? Math.floor(new Date(s.createdAt).getTime() / 1000) || 0
+            : 0,
+          duration: toIntOr(s.duration, 0),
+          inputTokens: toIntOr(s.tokens?.input, 0),
+          outputTokens: toIntOr(s.tokens?.output, 0),
+          cacheReadTokens: toIntOr(s.tokens?.cacheRead, 0),
+          cacheWriteTokens: toIntOr(s.tokens?.cacheWrite, 0),
+          totalTokens: toIntOr(s.tokens?.total, 0),
+          model: s.model ?? null,
+          input: s.input ?? null,
+          output: s.output ?? null,
+          error: norm.error,
+          llmThinkDuration: s.llmThinkDuration ?? null,
+          agentReplyDuration: s.agentReplyDuration ?? null,
+          toolDuration: s.toolDuration ?? null,
+          details: s.details ?? null,
+          content: s.content ?? null,
+          parentId: parentRaw || null,
+          branchId: branchRaw || null,
+          parentProvided: parentRaw.length > 0,
+          branchProvided: branchRaw.length > 0,
+          isForkPoint: typeof s.isForkPoint === "boolean" ? s.isForkPoint : null as boolean | null,
+        };
       });
-      const existingIds = new Set(existing.map((e) => e.id));
+
+      const incomingIds = prepared.map((d) => d.id);
+      const existingRows = await prisma.span.findMany({
+        where: { id: { in: incomingIds } },
+        select: { id: true, parentId: true, branchId: true, isForkPoint: true },
+      });
+      const existingById = new Map(existingRows.map((row) => [row.id, row]));
+      const data = prepared.map((row) => {
+        const prev = existingById.get(row.id);
+        return {
+          id: row.id,
+          sessionId: row.sessionId,
+          roundIndex: row.roundIndex,
+          turnId: row.turnId,
+          kind: row.kind,
+          name: row.name,
+          status: row.status,
+          startTime: row.startTime,
+          duration: row.duration,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          cacheReadTokens: row.cacheReadTokens,
+          cacheWriteTokens: row.cacheWriteTokens,
+          totalTokens: row.totalTokens,
+          model: row.model,
+          input: row.input,
+          output: row.output,
+          error: row.error,
+          llmThinkDuration: row.llmThinkDuration,
+          agentReplyDuration: row.agentReplyDuration,
+          toolDuration: row.toolDuration,
+          details: row.details,
+          content: row.content,
+          parentId: row.parentProvided ? row.parentId : (prev?.parentId ?? null),
+          branchId: row.branchProvided ? row.branchId : (prev?.branchId ?? null),
+          isForkPoint: row.isForkPoint ?? prev?.isForkPoint ?? false,
+        };
+      });
+      const existingIds = new Set(existingById.keys());
 
       const toInsert = [];
       const toUpdate = [];
@@ -280,7 +339,7 @@ function toIntOr(v: unknown, fallback: number): number {
 
     for (const sp of allSpans) {
       roundIndices.add(sp.roundIndex);
-      if (sp.status === "failed") errorCount++;
+      if (isFailedStatus(sp.status)) errorCount++;
       // 口径与 scripts/backfill-session-counters.cjs、session-board.ts 保持一致
       if (sp.kind === "llm_thinking") llmCallCount++;
       // command（shell 命令）与 tool_call 同属「工具调用」，与 trace 前端 isToolKind 对齐

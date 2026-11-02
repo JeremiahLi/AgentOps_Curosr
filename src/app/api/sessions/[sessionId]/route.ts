@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { analyzeSessionFacts } from "@/lib/engine/ingest/session-facts";
+import { isFailedStatus, normalizeSpanRecord } from "@/lib/engine/ingest/span-record";
 import { getSessionBaseline } from "@/lib/engine/stats/session-board";
 
 /** 工具调用口径：command（shell 命令）与 tool_call 同属工具调用，与 trace 前端 isToolKind 一致 */
@@ -89,8 +91,8 @@ export async function GET(
   const llmCalls = allSpans.filter((s) => s.kind === "llm_thinking").length;
   const toolSpans = allSpans.filter((s) => isToolKind(s.kind));
   const toolCalls = toolSpans.length;
-  const failedTools = toolSpans.filter((s) => s.status === "failed").length;
-  const failedSpans = allSpans.filter((s) => s.status === "failed" || s.status === "error").length;
+  const failedTools = toolSpans.filter((s) => isFailedStatus(s.status)).length;
+  const failedSpans = allSpans.filter((s) => isFailedStatus(s.status)).length;
   const thinkMs = allSpans.reduce(
     (n, s) => n + (s.kind === "llm_thinking" ? (s.llmThinkDuration ?? s.duration) : 0),
     0,
@@ -156,6 +158,11 @@ export async function GET(
     parentSpanId: session.parentSpanId,
     childCount,
     /**
+     * 单次运行的过程事实：已恢复的失败只作背景，未恢复 / 循环 / 模型或回答失败 / 未交付才是异常。
+     * 由 span 现算，历史行里 status=error 或空 error 也会在这里补齐，不依赖是否跑过回填。
+     */
+    facts: analyzeSessionFacts(allSpans),
+    /**
      * 会话级指标：全部由内存里的 allSpans 现算，与详情页 header 的 LLM/Tool chip 完全同源，
      * 不依赖 Session.llmCallCount 是否已回填。
      */
@@ -195,6 +202,13 @@ function serializeSpan(span: {
   content: string | null;
   isForkPoint: boolean;
 }) {
+  const norm = normalizeSpanRecord({
+    status: span.status,
+    error: span.error,
+    output: span.output,
+    details: span.details,
+    kind: span.kind,
+  });
   return {
     id: span.id,
     roundIndex: span.roundIndex,
@@ -203,14 +217,14 @@ function serializeSpan(span: {
     branchId: span.branchId,
     kind: span.kind,
     name: span.name,
-    status: span.status,
+    status: norm.status,
     startTime: span.startTime * 1000,
     duration: span.duration,
     tokens: span.totalTokens > 0 ? { input: span.inputTokens, output: span.outputTokens, cacheRead: span.cacheReadTokens, cacheWrite: span.cacheWriteTokens, total: span.totalTokens } : undefined,
     model: span.model ?? undefined,
     input: span.input ?? undefined,
     output: span.output ?? undefined,
-    error: span.error ?? undefined,
+    error: norm.error ?? undefined,
     llmThinkDuration: span.llmThinkDuration ?? undefined,
     agentReplyDuration: span.agentReplyDuration ?? undefined,
     toolDuration: span.toolDuration ?? undefined,
