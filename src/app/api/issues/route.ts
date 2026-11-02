@@ -32,6 +32,7 @@ export async function GET(request: Request) {
         take: 3,
         include: { release: { select: { label: true, quality: true } } },
       },
+      regressionCase: { select: { id: true } },
     },
   });
 
@@ -73,6 +74,7 @@ export async function GET(request: Request) {
       severity: issue.severity,
       hitCount: issue.hitCount,
       sampleError: issue.sampleError,
+      regressionCaseId: issue.regressionCase?.id ?? null,
       firstSeenAt: issue.firstSeenAt.toISOString(),
       lastSeenAt: issue.lastSeenAt.toISOString(),
       releases: releasesByIssue.get(issue.id) ?? [],

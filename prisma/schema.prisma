@@ -32,6 +32,7 @@ model Agent {
   sessions  Session[]
   releases  Release[]
   issues    Issue[]
+  regressionCases RegressionCase[]
 }
 
 model Project {
@@ -91,6 +92,10 @@ model Session {
   parentSpanId     String?
   /// 这次运行的版本指纹。空表示尚未归入任何 Release。
   releaseId        String?
+  /// 首条用户话归一化后的分桶键。只用于对照，不做分类。
+  taskKey          String   @default("")
+  /// 这次运行被绑定到的回归用例。空表示普通会话。
+  regressionCaseId String?
   rawData          String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -99,6 +104,7 @@ model Session {
   user             User     @relation(fields: [userId], references: [id])
   agent            Agent    @relation(fields: [agentId], references: [id])
   release          Release? @relation(fields: [releaseId], references: [id])
+  regressionCase   RegressionCase? @relation(fields: [regressionCaseId], references: [id])
   spans            Span[]
 
   @@index([userId, status, startTime])
@@ -107,6 +113,8 @@ model Session {
   @@index([startTime])
   @@index([parentSessionId])
   @@index([releaseId])
+  @@index([agentId, taskKey])
+  @@index([regressionCaseId])
 }
 
 model Release {
@@ -128,6 +136,7 @@ model Release {
   agent    Agent     @relation(fields: [agentId], references: [id])
   sessions Session[]
   evidence IssueEvidence[]
+  regressionRuns RegressionRun[]
 
   @@unique([agentId, fingerprint])
   @@index([agentId, lastSeenAt])
@@ -154,6 +163,7 @@ model Issue {
 
   agent    Agent           @relation(fields: [agentId], references: [id])
   evidence IssueEvidence[]
+  regressionCase RegressionCase?
 
   @@unique([agentId, signature])
   @@index([status, lastSeenAt])
@@ -175,6 +185,58 @@ model IssueEvidence {
   release Release? @relation(fields: [releaseId], references: [id])
 
   @@unique([issueId, sessionId, spanId])
+  @@index([sessionId])
+}
+
+/// 从一条问题钉出的回归用例。平台不重新执行 Agent，只保存输入、通过标准和后来绑定的判定。
+model RegressionCase {
+  id              String   @id @default(cuid())
+  issueId         String   @unique
+  agentId         String
+  sourceSessionId String
+  frozenInput     String   @default("")
+  passCriteria    String
+  referenceOutput String   @default("")
+  /// JSON 数组，元素是 evaluator id
+  evaluatorIds    String   @default("[]")
+  /// JSON 对象，按 evaluator id 存规则参数
+  evaluatorConfig String   @default("{}")
+  /// 人写的假设根因。裁判摘要写在 RegressionRun 上，两边不互相覆盖。
+  hypothesis      String   @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  issue    Issue            @relation(fields: [issueId], references: [id])
+  agent    Agent            @relation(fields: [agentId], references: [id])
+  runs     RegressionRun[]
+  sessions Session[]
+
+  @@index([agentId])
+}
+
+model RegressionRun {
+  id           String   @id @default(cuid())
+  caseId       String
+  evaluatorId  String
+  sessionId    String
+  releaseId    String?
+  status       String   @default("pending")
+  verdict      String   @default("")
+  score        Float    @default(0)
+  summary      String   @default("")
+  evidenceJson String   @default("{}")
+  errorMessage String   @default("")
+  durationMs   Int      @default(0)
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  case    RegressionCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  release Release?       @relation(fields: [releaseId], references: [id])
+
+  @@unique([caseId, evaluatorId, sessionId])
+  @@index([caseId])
   @@index([sessionId])
 }
 

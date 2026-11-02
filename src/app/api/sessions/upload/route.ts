@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { computeOutcome, deriveAgentName, deriveTitle, workspaceLabel } from "@/lib/engine/ingest/derive";
 import { recordSessionIssues } from "@/lib/engine/ingest/record-issues";
+import { bindRegressionSession, taskKeyOf } from "@/lib/engine/ingest/regression";
 import { resolveRelease } from "@/lib/engine/ingest/release";
 import { isFailedStatus, normalizeSpanRecord } from "@/lib/engine/ingest/span-record";
 
@@ -28,6 +29,8 @@ export async function POST(request: Request) {
     promptHash?: string;
     skillSetHash?: string;
     configHash?: string;
+    /** 这次运行对应的回归用例。不存在或不属于该 Agent 时忽略，不让上传失败 */
+    caseId?: string;
     rawData?: string;
     spans?: Array<{
       spanId?: string;
@@ -370,6 +373,9 @@ function toIntOr(v: unknown, fallback: number): number {
         title: true,
         parentSpanId: true,
         startTime: true,
+        agentId: true,
+        taskKey: true,
+        regressionCaseId: true,
         release: { select: { quality: true } },
         agent: { select: { name: true } },
       },
@@ -417,6 +423,22 @@ function toIntOr(v: unknown, fallback: number): number {
       },
     });
     const keepStoredRelease = existingSession?.release?.quality === "reported" && releaseDraft.quality !== "reported";
+    const sessionAgentId = shouldReassignAgent ? agent.id : (existingSession?.agentId ?? agent.id);
+    const userSpan = [...allSpans]
+      .sort((a, b) => a.roundIndex - b.roundIndex || a.turnId - b.turnId)
+      .find((span) => span.kind === "user" && span.input);
+    const nextTaskKey = taskKeyOf(userSpan?.input || "");
+    const requestedCaseId = typeof body.caseId === "string" ? body.caseId.trim() : "";
+    const requestedCase = requestedCaseId
+      ? await prisma.regressionCase.findUnique({
+          where: { id: requestedCaseId },
+          select: { id: true, agentId: true },
+        })
+      : null;
+    const bindCaseId =
+      requestedCase && requestedCase.agentId === sessionAgentId && !existingSession?.regressionCaseId
+        ? requestedCase.id
+        : "";
 
     const saved = await prisma.session.update({
       where: { id: sessionID },
@@ -427,6 +449,8 @@ function toIntOr(v: unknown, fallback: number): number {
         ...(outcome ? { outcome } : {}),
         ...(shouldReassignAgent ? { agentId: agent.id } : {}),
         ...(keepStoredRelease ? {} : { releaseId: release.id }),
+        ...(existingSession?.taskKey || !nextTaskKey ? {} : { taskKey: nextTaskKey }),
+        ...(bindCaseId ? { regressionCaseId: bindCaseId } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(parentSpanId ? { parentSpanId } : {}),
         model: model || "",
@@ -455,6 +479,14 @@ function toIntOr(v: unknown, fallback: number): number {
       });
     } catch (issueErr) {
       console.error("[upload] issue record failed", issueErr);
+    }
+
+    if (bindCaseId) {
+      try {
+        await bindRegressionSession(prisma, { caseId: bindCaseId, sessionId: sessionID, rerun: false });
+      } catch (bindErr) {
+        console.error("[upload] regression bind failed", bindErr);
+      }
     }
 
     // 反向补填：父会话常常最后才结束/上传，子会话此前匹配不到父 span（诚实置 null）

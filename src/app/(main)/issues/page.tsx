@@ -18,6 +18,7 @@ interface IssueRow {
   severity: string;
   hitCount: number;
   sampleError: string;
+  regressionCaseId: string | null;
   lastSeenAt: string;
   releases: { label: string; quality: string }[];
   evidence: { sessionId: string; spanId: string; releaseLabel: string }[];
@@ -47,6 +48,9 @@ export default function IssuesPage() {
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [busyId, setBusyId] = useState("");
+  const [pinId, setPinId] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [evaluators, setEvaluators] = useState<{ id: string; name: string; type: string }[]>([]);
 
   const load = useCallback(async (nextStatus: string, nextAgent: string, nextQ: string) => {
     const params = new URLSearchParams();
@@ -86,6 +90,41 @@ export default function IssuesPage() {
         body: JSON.stringify({ action }),
       });
       if (!response.ok) return;
+      const data = await load(status, agentId, q);
+      setIssues(data.issues);
+      setAgents(data.agents);
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  useEffect(() => {
+    fetch("/api/evaluators")
+      .then((response) => (response.ok ? response.json() : { evaluators: [] }))
+      .then((data) => setEvaluators(data.evaluators ?? []))
+      .catch(() => setEvaluators([]));
+  }, []);
+
+  async function pin(issue: IssueRow, form: FormData) {
+    const passCriteria = String(form.get("passCriteria") || "");
+    const referenceOutput = String(form.get("referenceOutput") || "");
+    const hypothesis = String(form.get("hypothesis") || "");
+    const sourceSessionId = String(form.get("sourceSessionId") || issue.evidence[0]?.sessionId || "");
+    const evaluatorIds = form.getAll("evaluatorId").map(String);
+    setBusyId(issue.id);
+    try {
+      const response = await fetch(`/api/issues/${issue.id}/case`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ passCriteria, referenceOutput, hypothesis, sourceSessionId, evaluatorIds }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setPinError(body.error || "没有钉上");
+        return;
+      }
+      setPinError("");
+      setPinId("");
       const data = await load(status, agentId, q);
       setIssues(data.issues);
       setAgents(data.agents);
@@ -204,6 +243,17 @@ export default function IssuesPage() {
                           忽略
                         </Button>
                       )}
+                      {issue.regressionCaseId ? (
+                        <Link href="/regression" className="self-center text-[12px] text-primary underline-offset-2 hover:underline">
+                          已钉用例
+                        </Link>
+                      ) : (
+                        (issue.status === "open" || issue.status === "confirmed") && (
+                          <Button size="sm" variant="outline" onClick={() => setPinId(pinId === issue.id ? "" : issue.id)}>
+                            钉成回归用例
+                          </Button>
+                        )
+                      )}
                     </div>
                   </div>
                   {issue.evidence.length > 0 && (
@@ -223,6 +273,54 @@ export default function IssuesPage() {
                         </Link>
                       ))}
                     </div>
+                  )}
+                  {pinId === issue.id && (
+                    <form
+                      className="mt-1 flex flex-col gap-2 border-t border-border/60 pt-2"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        pin(issue, new FormData(event.currentTarget));
+                      }}
+                    >
+                      <textarea
+                        name="passCriteria"
+                        required
+                        placeholder="通过标准：怎样算修好。空着不能提交。"
+                        className="min-h-16 rounded-md border border-border bg-background px-2 py-1.5 text-[13px]"
+                      />
+                      <textarea
+                        name="referenceOutput"
+                        placeholder="参考答案，可选"
+                        className="min-h-12 rounded-md border border-border bg-background px-2 py-1.5 text-[13px]"
+                      />
+                      <input
+                        name="hypothesis"
+                        placeholder="假设根因，可选。裁判结论不会改这里。"
+                        className="h-8 rounded-md border border-border bg-background px-2 text-[13px]"
+                      />
+                      <input
+                        name="sourceSessionId"
+                        defaultValue={issue.evidence[0]?.sessionId || ""}
+                        placeholder="冻结输入用的会话 id"
+                        className="h-8 rounded-md border border-border bg-background px-2 font-mono text-[12px]"
+                      />
+                      <div className="flex flex-wrap gap-2 text-[12px]">
+                        {evaluators.map((item) => (
+                          <label key={item.id} className="inline-flex items-center gap-1">
+                            <input type="checkbox" name="evaluatorId" value={item.id} defaultChecked={item.id === "task-completion"} />
+                            {item.name}
+                          </label>
+                        ))}
+                      </div>
+                      <div>
+                        {pinError && pinId === issue.id ? (
+                          <p className="mb-1 text-[12px] text-destructive">{pinError}</p>
+                        ) : null}
+                        <Button type="submit" size="sm" disabled={busyId === issue.id}>
+                          保存用例
+                        </Button>
+                      </div>
+                    </form>
                   )}
                 </CardContent>
               </Card>
