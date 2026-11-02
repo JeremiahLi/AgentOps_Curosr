@@ -12,6 +12,7 @@ import { MultiLineTrendChart } from "@/components/charts/multi-line-trend-chart"
 import { StackedBarTrendChart } from "@/components/charts/stacked-bar-trend-chart";
 import { HealthPanel } from "@/components/agent/health-panel";
 import { AgentIssueList } from "@/components/agent/agent-issue-list";
+import { AgentGuidePanel } from "@/components/agent/agent-guide";
 import { TopList } from "@/components/agent/top-list";
 import {
   formatDateTime,
@@ -199,6 +200,9 @@ export default function AgentDetailPage() {
           sub={`${totals.projects} 个项目 · 全历史 ${profile.totalUsers} 人`}
         />
       </div>
+
+      {/* 开发指引：已打开问题的改动面 */}
+      <AgentGuidePanel agentName={agentName} />
 
       {/* 问题列表 + 工具榜 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

@@ -46,7 +46,9 @@ const denied = diagnose([
   answered(2),
 ]);
 assert(denied.primary?.causeClass === "permission", "Permission denied 应归为权限");
-assert(denied.primary?.cause === "edit_file 被拒绝访问", "权限根因应点名工具");
+assert(denied.primary?.cause.includes("edit_file 被拒绝访问"), "权限根因应点名工具");
+assert(denied.primary?.cause.includes("这次没采到入参"), "没有入参时要写明没采到");
+assert(denied.primary?.layer === "collect", "没有路径和入参时不建议改 Agent");
 
 const quotes = diagnose([
   toolFail({
@@ -129,6 +131,8 @@ const loop = diagnose([
 assert(loop.primary?.causeClass === "not_found", "循环仍按错误本身分类");
 assert(loop.primary?.cause.includes("同一入参连续失败 2 次"), "入参相同时要写明重复");
 assert(loop.primary?.checks[0] === "不要用同一参数再试", "循环的第一条检查是停止原样重试");
+assert(loop.primary?.layer === "env", "路径不存在时改动面是运行环境");
+assert(loop.primary?.cause.includes("/missing"), "根因应带上找不到的路径");
 
 const changed = diagnose([
   toolFail({ id: "a", name: "bash", input: "ls /a", output: "No such file or directory", turnId: 1 }),

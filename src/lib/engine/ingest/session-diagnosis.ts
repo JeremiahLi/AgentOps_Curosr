@@ -15,14 +15,18 @@ export type CauseClass =
   | "no_delivery"
   | "unknown";
 
+export type ChangeLayer = "prompt" | "skill" | "tool" | "env" | "collect";
+
 export interface DiagnosisItem {
   causeClass: CauseClass;
   signature: string;
   spanId: string;
-  /** 根因，一句。循环会在句尾补上入参是否重复 */
+  /** 根因，一句。带上入参、路径或错误原文里点名的对象 */
   cause: string;
   /** 先检查，1 到 2 条 */
   checks: string[];
+  /** 只给一个改动面。证据不够时是 collect，不建议改 Agent */
+  layer: ChangeLayer;
 }
 
 export interface SessionDiagnosis {
@@ -199,17 +203,125 @@ function loopSuffix(finding: SessionFinding, spans: FactSpan[]): string | null {
   return same ? `同一入参连续失败 ${times} 次` : `换了入参仍是同一错误，连续 ${times} 次`;
 }
 
+function argsText(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed || trimmed === "{}" || trimmed === "null") return "";
+  try {
+    const obj = JSON.parse(trimmed) as Record<string, unknown>;
+    if (obj && typeof obj === "object") {
+      for (const key of ["command", "cmd", "path", "file_path", "filePath", "target"]) {
+        const value = obj[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+      if (Object.keys(obj).length === 0) return "";
+    }
+  } catch {
+    // 入参不是 JSON，原样截断
+  }
+  return trimmed;
+}
+
+function pathIn(text: string): string {
+  const win = text.match(/[A-Za-z]:\\[^\s"'<>|]+/);
+  if (win) return win[0];
+  const posix = text.match(/\/(?:[\w.-]+\/)+[\w.-]+/);
+  return posix ? posix[0] : "";
+}
+
+function skillNameOf(spans: FactSpan[], finding: SessionFinding): string {
+  const headId = finding.spanIds[0] || finding.evidence.spanId;
+  const span = spans.find((item) => item.id === headId);
+  if (!span?.details) return "";
+  try {
+    const details = JSON.parse(span.details) as { skillName?: unknown };
+    return typeof details.skillName === "string" ? details.skillName.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function modelSnippet(text: string, needle: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  if (needle && flat.includes(needle)) {
+    const at = flat.indexOf(needle);
+    const start = Math.max(0, at - 24);
+    return clip(flat.slice(start), 80);
+  }
+  return clip(flat, 80);
+}
+
+/**
+ * 把类别写成一句带对象的诊断。入参为空时标明没采到，不据此编改法。
+ * 改动面只留一个：提示词、skill、工具参数、运行环境，或采集。
+ */
+function specify(
+  finding: SessionFinding,
+  spans: FactSpan[],
+  classified: Classified,
+  error: string,
+): { cause: string; checks: string[]; layer: ChangeLayer } {
+  const args = argsText(finding.evidence.input || "");
+  const named = pathIn(error) || pathIn(args);
+  const skill = skillNameOf(spans, finding);
+  const model = modelSnippet(finding.evidence.precedingModelOutput || "", named || args);
+  const missingArgs = !args;
+  const collectOnly =
+    classified.causeClass === "missing_error" ||
+    classified.causeClass === "exit_code" ||
+    (missingArgs && !named && classified.causeClass !== "exception" && classified.causeClass !== "validation" && classified.causeClass !== "bad_invocation");
+
+  const bits = [classified.cause];
+  if (named && !classified.cause.includes(named)) bits.push(named);
+  if (args && !classified.cause.includes(args) && args !== named) bits.push(`入参 ${clip(args, 80)}`);
+  if (missingArgs && classified.causeClass !== "no_delivery") bits.push("这次没采到入参");
+  if (model) bits.push(`模型当时说：${model}`);
+  const cause = bits.join("。");
+
+  if (collectOnly) {
+    return { cause, checks: classified.checks.slice(0, 2), layer: "collect" };
+  }
+
+  let layer: ChangeLayer = "tool";
+  let check = classified.checks[0] || "人工看这条 span";
+  if (skill && (error.includes(skill) || named.includes("SKILL.md") || named.includes("/skills/"))) {
+    layer = "skill";
+    check = `改 skill：${skill}`;
+  } else if ((named || args) && model && ((named && model.includes(named)) || (args && model.includes(args.slice(0, 40))))) {
+    layer = "prompt";
+    check = `改提示词：模型决定了 ${clip(named || args, 60)}`;
+  } else if (classified.causeClass === "permission" || classified.causeClass === "not_found" || classified.causeClass === "is_directory") {
+    layer = "env";
+    check = `改运行环境：${clip(named || args || classified.checks[0], 80)}`;
+  } else if (classified.causeClass === "bad_invocation") {
+    layer = "tool";
+    check = args ? `改工具参数：${clip(args, 60)}，核对引号` : "改工具参数：核对引号。这次没采到完整命令";
+  } else if (classified.causeClass === "validation" || classified.causeClass === "exception") {
+    layer = "tool";
+    const target = args || named || classified.checks[0];
+    check = `改工具参数：${clip(target, 80)}`;
+  } else if (args) {
+    layer = "tool";
+    check = `改工具参数：${clip(args, 80)}`;
+  }
+
+  const loopFirst = finding.kind === "loop" || finding.repeatCount >= 2 ? ["不要用同一参数再试"] : [];
+  return { cause, checks: [...loopFirst, check].slice(0, 2), layer };
+}
+
 function diagnoseFinding(finding: SessionFinding, spans: FactSpan[]): DiagnosisItem {
   const tool = toolLabel(finding.evidence.spanName);
-  const classified = classify(finding, errorTextOf(finding, spans), tool);
+  const error = errorTextOf(finding, spans);
+  const classified = classify(finding, error, tool);
+  const specified = specify(finding, spans, classified, error);
   const suffix = loopSuffix(finding, spans);
-  const checks = suffix ? ["不要用同一参数再试", ...classified.checks].slice(0, 2) : classified.checks.slice(0, 2);
   return {
     causeClass: classified.causeClass,
     signature: finding.signature,
     spanId: finding.evidence.spanId || finding.spanIds[0] || "",
-    cause: suffix ? `${classified.cause}。${suffix}` : classified.cause,
-    checks,
+    cause: suffix ? `${specified.cause}。${suffix}` : specified.cause,
+    checks: specified.checks,
+    layer: specified.layer,
   };
 }
 

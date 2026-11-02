@@ -2,8 +2,16 @@
 
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import type { DiagnosisItem, SessionDiagnosis } from "@/lib/engine/ingest/session-diagnosis";
+import type { ChangeLayer, DiagnosisItem, SessionDiagnosis } from "@/lib/engine/ingest/session-diagnosis";
 import type { FindingKind, SessionFacts } from "@/lib/engine/ingest/session-facts";
+
+const LAYER_LABEL: Record<ChangeLayer, string> = {
+  prompt: "提示词",
+  skill: "skill",
+  tool: "工具参数",
+  env: "运行环境",
+  collect: "采集",
+};
 
 const KIND_LABEL: Record<FindingKind, string> = {
   recovered: "已恢复",
@@ -71,6 +79,7 @@ export function SessionFactsBar({
         {diagnosis.primary && diagnosis.primary.checks.length > 0 && (
           <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
             先检查：{diagnosis.primary.checks.join("；")}
+            {diagnosis.primary.layer !== "collect" ? `。改动面：${LAYER_LABEL[diagnosis.primary.layer]}` : ""}
           </p>
         )}
         {showOthers && diagnosis.others.length > 0 && (

@@ -20,7 +20,7 @@ const FILE_STATS_KEY = '__files__';
 // 派生算法版本：mergeToolCalls / buildSessionPayload / 时间锚点修正等派生逻辑变更时必须 +1。
 // 作用：读前预检（stat 没变就跳过读盘）会绕过签名重算，若没有版本号，
 // 派生算法升级后存量会话将被永远跳过、无法自动重传。版本号不匹配 → 强制全量重读重算。
-const DERIVE_VERSION = 3;
+const DERIVE_VERSION = 4;
 
 // 检查点条目保留时长（天），超过则视为陈旧并剪枝；可用环境变量覆盖
 const CHECKPOINT_TTL_MS =
@@ -101,6 +101,8 @@ function mergeToolCalls(records) {
           existing.payload = existing.payload || {};
           existing.payload.isError = true;
           if (!existing.payload.error && r.payload.error) existing.payload.error = r.payload.error;
+          if (!existing.payload.stderr && r.payload.stderr) existing.payload.stderr = r.payload.stderr;
+          if (!existing.payload.skillName && r.payload.skillName) existing.payload.skillName = r.payload.skillName;
         }
       }
       continue;
@@ -194,6 +196,9 @@ function buildSessionPayload(records) {
         span.llmThinkDuration = r.payload.timings.llmThink != null ? r.payload.timings.llmThink : null;
         span.agentReplyDuration = r.payload.timings.agentReply != null ? r.payload.timings.agentReply : null;
       }
+      if (r.payload && (r.payload.toolCalls || r.payload.skillName)) {
+        span.details = stringifyIfExists({ toolCalls: r.payload.toolCalls || [], skillName: r.payload.skillName || '' });
+      }
     } else if (r.kind === 'answer') {
       span.input = r.payload && r.payload.thinking ? r.payload.thinking : '';
       span.output = r.payload && r.payload.text ? r.payload.text : '';
@@ -212,8 +217,20 @@ function buildSessionPayload(records) {
       if (r.payload && r.payload.error) span.error = stringifyIfExists(r.payload.error);
       if (r.payload && r.payload.error && !span.output) span.output = stringifyIfExists(r.payload.error);
       if (span.isError && !span.error) span.error = span.output || '工具失败，但没有输出';
+      if (r.payload && r.payload.args) {
+        var argsText = stringifyIfExists(r.payload.args);
+        if (!span.input || span.input === '{}' || span.input === 'null') span.input = argsText;
+      }
+      if (r.payload && r.payload.stderr && span.error && String(span.error).indexOf(r.payload.stderr) < 0) {
+        span.error = String(span.error) + '\n' + r.payload.stderr;
+      }
+      var detailObj = {};
+      if (r.payload && r.payload.details && typeof r.payload.details === 'object') detailObj = Object.assign({}, r.payload.details);
+      if (r.payload && r.payload.args) detailObj.args = r.payload.args;
+      if (r.payload && r.payload.stderr) detailObj.stderr = r.payload.stderr;
+      if (r.payload && r.payload.skillName) detailObj.skillName = r.payload.skillName;
+      if (Object.keys(detailObj).length) span.details = stringifyIfExists(detailObj);
       if (r.payload && r.payload.toolDuration != null) span.toolDuration = r.payload.toolDuration;
-      if (r.payload && r.payload.details) span.details = stringifyIfExists(r.payload.details);
       if (r.payload && r.payload.content) span.content = stringifyIfExists(r.payload.content);
     }
     if ((r.kind === 'llm_thinking' || r.kind === 'answer') && (r.status === 'failed' || r.status === 'error')) {

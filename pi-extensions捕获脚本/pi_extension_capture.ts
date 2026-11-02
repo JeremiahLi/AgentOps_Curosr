@@ -66,6 +66,24 @@ function failureErrorText(text, details, fallback) {
   return fallback || '工具失败，但没有输出'
 }
 
+function compactArgs(input) {
+  if (input == null) return null
+  if (typeof input !== 'object') return input
+  var keep = {}
+  var keys = ['command', 'cmd', 'path', 'file_path', 'filePath', 'target']
+  for (var i = 0; i < keys.length; i++) {
+    var value = input[keys[i]]
+    if (typeof value === 'string' && value.trim()) keep[keys[i]] = value.trim().slice(0, 500)
+  }
+  return Object.keys(keep).length > 0 ? keep : input
+}
+
+function stderrText(details) {
+  if (!details || typeof details !== 'object') return ''
+  if (typeof details.stderr === 'string') return details.stderr.trim()
+  return ''
+}
+
 var SECRET_KEYS = new Set(
   ['apiKey','api_key','apikey','authorization','Authorization',
    'token','accessToken','refreshToken','secret','clientSecret',
@@ -266,6 +284,7 @@ var promptHash = ''
 var configHash = ''
 var agentVersionLabel = ''
 var skillHashMap = {}
+var activeSkillName = ''
 
 function noteSkillHash(hash) {
   if (hash) skillHashMap[hash] = true
@@ -329,6 +348,7 @@ function ensureWriter(sessionId, projectId) {
   lastLlmSpanId = null
   promptHash = ''
   skillHashMap = {}
+  activeSkillName = ''
   // 换会话即 adopt 父链（幂等；覆盖扩展加载晚于 session_start 的时序；
   // session_start 已 adopt 过同一会话时直接用缓存，不会误读被重写的 env）
   adoptParentChain(sessionId)
@@ -351,6 +371,7 @@ function closeWriter(reason) {
   lastLlmSpanId = null
   promptHash = ''
   skillHashMap = {}
+  activeSkillName = ''
   if (reason && (reason.indexOf('quit') >= 0 || reason.indexOf('reload') >= 0 || reason.indexOf('beforeExit') >= 0 || reason.indexOf('SIG') >= 0)) {
     currentSessionStartTime = null
   }
@@ -614,12 +635,15 @@ export default function piCaptureExtension(pi) {
               }
             }
           }
+          activeSkillName = meta.name || skillName
           writeEvent(event, ctx, 'tool_call', 'skill', 'success', {
             toolCallId: 'skill_read_' + skillName,
             input: { path: foundPath },
+            args: compactArgs({ path: foundPath }),
+            skillName: activeSkillName,
             output: skillContent,
             isError: false,
-            details: { skillName: meta.name || skillName, description: meta.description || '', triggeredBy: 'user' }
+            details: { skillName: activeSkillName, description: meta.description || '', triggeredBy: 'user' }
           })
         } catch (err) {
           appendLogLine(PLUGIN_LOG_PATH, 'skill.read.error ' + skillName + ' ' + (err && err.message || err))
@@ -665,14 +689,14 @@ export default function piCaptureExtension(pi) {
     var timings = { llmThink: llmThinkDuration, agentReply: agentReplyDuration }
     if (toolCalls.length > 0) {
         writeEvent(event, ctx, 'llm_thinking', 'LLM 思考', isError ? 'failed' : 'success', {
-        thinking: thinking, text: text, toolCalls: toolCalls,
+        thinking: thinking, text: text, toolCalls: toolCalls, skillName: activeSkillName,
         tokens: { input: usage.input || 0, output: usage.output || 0, cacheRead: usage.cacheRead || 0, cacheWrite: usage.cacheWrite || 0, total: usage.totalTokens || 0 },
         model: model, timings: timings, error: failureText
       });
     } else {
       if (thinking) {
       writeEvent(event, ctx, 'llm_thinking', 'LLM 思考', isError ? 'failed' : 'success', {
-          thinking: thinking,
+          thinking: thinking, skillName: activeSkillName,
           tokens: { input: usage.input || 0, output: usage.output || 0, cacheRead: usage.cacheRead || 0, cacheWrite: usage.cacheWrite || 0, total: usage.totalTokens || 0 },
           model: model, timings: timings, error: failureText
         });
@@ -686,8 +710,12 @@ export default function piCaptureExtension(pi) {
   })
 
   pi.on('tool_call', function(event, ctx) {
+    var input = (event && event.input) || {}
     writeEvent(event, ctx, 'tool_call', (event && event.toolName) || 'tool', 'success', {
-      toolCallId: event && event.toolCallId, input: (event && event.input) || {}
+      toolCallId: event && event.toolCallId,
+      input: input,
+      args: compactArgs(input),
+      skillName: activeSkillName
     })
   })
 
@@ -707,11 +735,17 @@ export default function piCaptureExtension(pi) {
     }
     if (isSkillLoad && inputPath) {
       try { noteSkillHash(sha256Hex(fs.readFileSync(inputPath, 'utf-8'))) } catch (e) {}
+      activeSkillName = inputPath.split(/[/\\]/).slice(-2, -1)[0] || activeSkillName
     }
     var failed = !!(event && event.isError)
-    var errorText = failed ? failureErrorText(text, details, ((event && event.toolName) || 'tool') + ' 失败，但没有输出') : undefined
+    var stderr = stderrText(event && event.details)
+    var errorBody = text
+    if (stderr && text.indexOf(stderr) < 0) errorBody = text ? text + '\n' + stderr : stderr
+    var errorText = failed ? failureErrorText(errorBody, details, ((event && event.toolName) || 'tool') + ' 失败，但没有输出') : undefined
+    var input = (event && event.input) || {}
     writeEvent(event, ctx, 'tool_call', toolName, failed ? 'failed' : 'success', {
-      toolCallId: event && event.toolCallId, input: (event && event.input) || {}, output: text, isError: failed,
+      toolCallId: event && event.toolCallId, input: input, args: compactArgs(input), skillName: activeSkillName,
+      stderr: stderr, output: text, isError: failed,
       error: errorText, details: details, content: contentPreview
     })
   })
@@ -744,12 +778,15 @@ export default function piCaptureExtension(pi) {
       pendingToolExecutionStart = null
     }
     var execFailed = !!(event && event.isError)
+    var execStderr = stderrText(event && event.details)
     writeEvent(event, ctx, 'tool_execution', (event && event.toolName) || 'tool', execFailed ? 'failed' : 'success', {
       toolCallId: event && event.toolCallId,
       toolName: (event && event.toolName) || '',
       duration: toolDuration,
       isError: execFailed,
-      error: execFailed ? failureErrorText('', event && event.details, ((event && event.toolName) || 'tool') + ' 执行失败，没有输出') : undefined
+      stderr: execStderr,
+      skillName: activeSkillName,
+      error: execFailed ? failureErrorText(execStderr, event && event.details, ((event && event.toolName) || 'tool') + ' 执行失败，没有输出') : undefined
     })
   })
 

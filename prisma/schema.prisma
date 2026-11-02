@@ -158,6 +158,9 @@ model Issue {
   hitCount    Int      @default(0)
   /// 第一条非空错误原文，给人看，不参与签名
   sampleError String   @default("")
+  /// 模型对这条问题的结论。打开页面时按证据哈希复用，不重复调用。
+  llmNote     String   @default("")
+  llmNoteHash String   @default("")
   firstSeenAt DateTime @default(now())
   lastSeenAt  DateTime @default(now())
 
