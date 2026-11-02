@@ -31,6 +31,7 @@ model Agent {
   projects  Project[]
   sessions  Session[]
   releases  Release[]
+  issues    Issue[]
 }
 
 model Project {
@@ -126,9 +127,55 @@ model Release {
 
   agent    Agent     @relation(fields: [agentId], references: [id])
   sessions Session[]
+  evidence IssueEvidence[]
 
   @@unique([agentId, fingerprint])
   @@index([agentId, lastSeenAt])
+}
+
+/// 跨会话的过程问题。同一 Agent 下签名唯一，不按时间窗重算。
+model Issue {
+  id          String   @id @default(cuid())
+  agentId     String
+  /// tool:{name}|err:{pattern} 或 llm|err: / answer|err: / session|no_delivery
+  signature   String
+  /// tool_failure | error_cluster
+  kind        String
+  title       String   @default("")
+  /// candidate → open → confirmed / dismissed；confirmed 之后才能标 fixed
+  status      String   @default("candidate")
+  /// critical | warning | info。没有错误文本时封顶 info
+  severity    String   @default("warning")
+  hitCount    Int      @default(0)
+  /// 第一条非空错误原文，给人看，不参与签名
+  sampleError String   @default("")
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  agent    Agent           @relation(fields: [agentId], references: [id])
+  evidence IssueEvidence[]
+
+  @@unique([agentId, signature])
+  @@index([status, lastSeenAt])
+  @@index([agentId, status])
+}
+
+model IssueEvidence {
+  id        String   @id @default(cuid())
+  issueId   String
+  sessionId String
+  /// 未交付且没有回答 span 时为空串
+  spanId    String   @default("")
+  releaseId String?
+  /// upload | backfill
+  source    String   @default("upload")
+  createdAt DateTime @default(now())
+
+  issue   Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  release Release? @relation(fields: [releaseId], references: [id])
+
+  @@unique([issueId, sessionId, spanId])
+  @@index([sessionId])
 }
 
 model Skill {

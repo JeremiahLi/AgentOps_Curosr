@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { computeOutcome, deriveAgentName, deriveTitle, workspaceLabel } from "@/lib/engine/ingest/derive";
+import { recordSessionIssues } from "@/lib/engine/ingest/record-issues";
 import { resolveRelease } from "@/lib/engine/ingest/release";
 import { isFailedStatus, normalizeSpanRecord } from "@/lib/engine/ingest/span-record";
 
@@ -417,7 +418,7 @@ function toIntOr(v: unknown, fallback: number): number {
     });
     const keepStoredRelease = existingSession?.release?.quality === "reported" && releaseDraft.quality !== "reported";
 
-    await prisma.session.update({
+    const saved = await prisma.session.update({
       where: { id: sessionID },
       data: {
         // status 由终态决定：只有真失败才置 error，partial 仍算完成（有交付）
@@ -442,7 +443,19 @@ function toIntOr(v: unknown, fallback: number): number {
         totalTokens,
         totalDuration,
       },
+      select: { agentId: true, releaseId: true },
     });
+
+    try {
+      await recordSessionIssues(prisma, {
+        agentId: saved.agentId,
+        sessionId: sessionID,
+        releaseId: saved.releaseId,
+        source: "upload",
+      });
+    } catch (issueErr) {
+      console.error("[upload] issue record failed", issueErr);
+    }
 
     // 反向补填：父会话常常最后才结束/上传，子会话此前匹配不到父 span（诚实置 null）
     // 且自己不会再上传——这里以刚入库的本会话 spans 反向补填子会话的 parentSpanId。

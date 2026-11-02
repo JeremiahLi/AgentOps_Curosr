@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Gauge,
   Bell,
+  ListChecks,
   Settings,
   Bot,
   Users,
@@ -40,6 +41,7 @@ const navGroups = [
   {
     label: "质量与告警",
     items: [
+      { label: "问题库", href: "/issues", icon: ListChecks, matchPrefixes: ["/issues"], keywords: ["issue", "问题", "根因", "确认"] },
       { label: "评测中心", href: "/experiments", icon: Gauge, matchPrefixes: ["/experiments"] },
       { label: "告警中心", href: "/alerts", icon: Bell },
     ],

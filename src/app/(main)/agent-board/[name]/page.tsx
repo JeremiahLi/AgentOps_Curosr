@@ -206,7 +206,7 @@ export default function AgentDetailPage() {
           <CardHeader className="flex-row items-baseline justify-between space-y-0 border-b border-border/60 pb-2.5">
             <CardTitle>问题列表</CardTitle>
             <span className="text-[11px] text-muted-foreground/80">
-              按严重度排序 · 证据可直接核对 · 链路可点开
+              工具失败和重复错误来自问题库 · 其余按当前时间范围
             </span>
           </CardHeader>
           <CardContent className="pt-3">

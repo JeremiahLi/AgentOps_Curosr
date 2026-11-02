@@ -18,12 +18,6 @@ import { buildBucketKeys, bucketLabel, type TrendGranularity } from "./trend";
  */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** 工具失败问题的触发阈值：占全部失败 1.5 倍以上（全场平均 6.9% → 取 10%） */
-const TOOL_FAIL_RATE_THRESHOLD = 10;
-const TOOL_FAIL_MIN_COUNT = 5;
-/** 错误聚类：至少 3 次，且占失败总数 5% 以上 */
-const CLUSTER_MIN_COUNT = 3;
-const CLUSTER_MIN_SHARE = 5;
 /** 环比跌幅阈值，复用 /api/stats 的 activity_drop 约定 */
 const DECLINE_RATIO = 0.5;
 
@@ -421,39 +415,10 @@ export async function getAgentDetail(
     };
   });
 
-  const clusterMap = new Map<string, { count: number; sample: string; sessionId: string; spanId: string }>();
   let emptyErrorCount = 0;
   for (const f of failedSpansList) {
-    if (!f.error.trim()) {
-      emptyErrorCount++;
-      continue;
-    }
-    const pattern = normalizeError(f.error);
-    if (!pattern) {
-      emptyErrorCount++;
-      continue;
-    }
-    const hit = clusterMap.get(pattern);
-    if (hit) hit.count++;
-    else
-      clusterMap.set(pattern, {
-        count: 1,
-        sample: f.error.trim().slice(0, 200),
-        sessionId: f.sessionId,
-        spanId: f.spanId,
-      });
+    if (!f.error.trim() || !normalizeError(f.error)) emptyErrorCount++;
   }
-
-  const totalFailedSample = failedSpansList.length || 1;
-  const errorClusters = Array.from(clusterMap.entries())
-    .map(([pattern, v]) => ({
-      pattern,
-      count: v.count,
-      sample: v.sample,
-      sessionId: v.sessionId,
-      spanId: v.spanId,
-    }))
-    .sort((a, b) => b.count - a.count);
 
   /* ---- 慢 span ---- */
   const spanP95 = spanP95Rows.length > 0 ? normalizeRow(spanP95Rows[0]) : null;
@@ -529,47 +494,35 @@ export async function getAgentDetail(
   /* ---- 问题列表 ---- */
   const issues: AgentIssue[] = [];
 
-  // 1) 工具失败：只用 tool_call 的失败率（answer 类失败 error 为空，会污染）
-  const badTools = topTools
-    .filter((x) => (x.failed ?? 0) >= TOOL_FAIL_MIN_COUNT && (x.failRate ?? 0) >= TOOL_FAIL_RATE_THRESHOLD)
-    .sort((a, b) => (b.failed ?? 0) - (a.failed ?? 0))
-    .slice(0, 3);
-  for (const tool of badTools) {
-    const toolFailSpans = failedSpansList.filter((f) => f.kind === "tool_call" && f.name === tool.name);
+  // 工具失败和错误聚类读问题库里已打开的记录。慢调用、衰退、沉默、数据质量仍按当前时间窗现算。
+  const storedIssues = await prisma.issue.findMany({
+    where: { agentId, status: { in: ["open", "confirmed", "fixed"] } },
+    orderBy: { lastSeenAt: "desc" },
+    include: {
+      evidence: { orderBy: { createdAt: "desc" }, take: 3 },
+    },
+  });
+  for (const issue of storedIssues) {
+    const severity = issue.severity === "critical" || issue.severity === "info" ? issue.severity : "warning";
+    const kind = issue.kind === "tool_failure" ? "tool_failure" : "error_cluster";
     issues.push({
-      id: `tool-${tool.name}`,
-      severity: (tool.failRate ?? 0) >= 20 ? "critical" : "warning",
-      kind: "tool_failure",
-      title: `${tool.name} 失败 ${tool.failed} 次（${(tool.failRate ?? 0).toFixed(1)}%）`,
+      id: issue.id,
+      severity,
+      kind,
+      title: issue.title,
       evidence: [
-        `调用 ${tool.value} 次，失败 ${tool.failed} 次，平均耗时 ${tool.sub?.replace("均 ", "") ?? "—"}`,
-        `占该 Agent 全部工具失败的 ${(((tool.failed ?? 0) / Math.max(toolFailed, 1)) * 100).toFixed(0)}%`,
+        `累计命中 ${issue.hitCount} 次`,
+        issue.sampleError ? `样例：${issue.sampleError.slice(0, 160)}` : "没有留下错误原文",
       ],
-      suggestion: `检查该工具入参构造（命令拼接、引号转义、路径存在性）；失败率超过 20% 时应优先处理。`,
-      links: toolFailSpans.slice(0, 3).map((f, i) => ({
-        sessionId: f.sessionId,
-        spanId: f.spanId,
-        label: `失败样例 ${i + 1}`,
+      suggestion:
+        issue.status === "confirmed"
+          ? "已确认。同样的新失败会继续追加证据。"
+          : "在问题库里确认或忽略。忽略后，同样的新会话不会把它重新打开。",
+      links: issue.evidence.map((item, index) => ({
+        sessionId: item.sessionId,
+        spanId: item.spanId || undefined,
+        label: `证据 ${index + 1}`,
       })),
-    });
-  }
-
-  // 2) 错误聚类
-  const topClusters = errorClusters
-    .filter((c) => c.count >= CLUSTER_MIN_COUNT && (c.count / totalFailedSample) * 100 >= CLUSTER_MIN_SHARE)
-    .slice(0, 3);
-  for (const [i, c] of topClusters.entries()) {
-    issues.push({
-      id: `cluster-${i}`,
-      severity: c.count >= 20 ? "critical" : "warning",
-      kind: "error_cluster",
-      title: `重复错误模式 ×${c.count}：${c.pattern.slice(0, 60)}`,
-      evidence: [
-        `同类失败 ${c.count} 次，占样本失败数的 ${((c.count / totalFailedSample) * 100).toFixed(0)}%`,
-        `样例：${c.sample.slice(0, 160)}`,
-      ],
-      suggestion: "同一模式重复出现通常是一个可修的确定性问题（权限、路径、依赖缺失），按样例定位后统一修复。",
-      links: [{ sessionId: c.sessionId, spanId: c.spanId, label: "样例会话" }],
     });
   }
 
@@ -677,9 +630,9 @@ export async function getAgentDetail(
     topUsers,
     topProjects,
     topModels,
-    errorClusters: topClusters,
+    errorClusters: [],
     slowSpans,
     trends,
-    dataNotes: emptyErrorCount > 0 ? [`${emptyErrorCount} 条失败 span 的 error 字段为空，已排除出错误聚类`] : [],
+    dataNotes: emptyErrorCount > 0 ? [`${emptyErrorCount} 条失败 span 没有错误文本`] : [],
   };
 }
