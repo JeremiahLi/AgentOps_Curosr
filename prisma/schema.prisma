@@ -1,0 +1,271 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  org       String   @default("")
+  createdAt DateTime @default(now())
+
+  projects  Project[]
+  sessions  Session[]
+}
+
+model Agent {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  emoji       String   @default("🤖")
+  description String   @default("")
+  framework   String   @default("pi-coding-agent")
+  version     String   @default("1.0.0")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  projects  Project[]
+  sessions  Session[]
+}
+
+model Project {
+  id        String   @id @default(cuid())
+  name      String
+  userId    String
+  agentId   String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id])
+  agent     Agent    @relation(fields: [agentId], references: [id])
+  sessions  Session[]
+
+  @@index([userId])
+  @@index([agentId])
+}
+
+model Session {
+  id               String   @id @default(cuid())
+  projectId        String
+  userId           String
+  agentId          String
+  status           String   @default("active")
+  /// 会话标题：首条用户诉求截断（采集端未提供时的派生值），空串表示尚未计算
+  title            String   @default("")
+  /// 会话终态：success / partial / failed；空串表示未知（历史数据未回填）
+  /// - success：末条 answer 成功且有输出，过程中无致命失败
+  /// - partial：末条 answer 成功且有输出，但过程中出现过失败（工具重试、校验回流）
+  /// - failed ：无 answer，或末条 answer 失败/空输出
+  outcome          String   @default("")
+  model            String   @default("")
+  startTime        DateTime @default(now())
+  endTime          DateTime?
+  totalRounds      Int      @default(0)
+  totalSpans       Int      @default(0)
+  errorCount       Int      @default(0)
+  /// LLM 调用次数：Span.kind='llm_thinking' 的计数。
+  /// 冗余落列的原因：Session 列表与看板要按会话直接读，避免每行 JOIN 聚合 Span。
+  /// 口径与详情页 header 的 LLM chip（session-detail-view.tsx 的 llmCount）一致。
+  llmCallCount     Int      @default(0)
+  /// 工具调用次数：Span.kind IN ('tool_call','command')。
+  /// 注意包含 command（shell 命令），与 trace 前端 isToolKind 口径一致；
+  /// agent-board.ts 的 toolCalls 只统计 'tool_call'，两处口径差异属历史遗留。
+  toolCallCount    Int      @default(0)
+  totalInputTokens Int      @default(0)
+  totalOutputTokens Int     @default(0)
+  totalCacheReadTokens  Int  @default(0)
+  totalCacheWriteTokens Int  @default(0)
+  totalTokens      Int      @default(0)
+  totalDuration    Int      @default(0)
+  forkCount        Int      @default(0)
+  /// 父会话 id：跨进程父子链（采集端经环境变量链上报，PI_PARENT_SESSION_ID > PI_SESSION_ID 兜底）。
+  /// 无外键约束——子会话可能先于父会话入库；null 表示无父/未知（含全部历史数据，不做回填）。
+  parentSessionId  String?
+  /// 生成本会话的父会话工具调用 span id：时间窗覆盖本会话 startTime 的 kind ∈ ('tool_call','command') Span。
+  /// 无外键；由 upload route 服务端时间窗匹配填充（fill-if-empty），不回填历史。
+  parentSpanId     String?
+  rawData          String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  project          Project  @relation(fields: [projectId], references: [id])
+  user             User     @relation(fields: [userId], references: [id])
+  agent            Agent    @relation(fields: [agentId], references: [id])
+  spans            Span[]
+
+  @@index([userId, status, startTime])
+  @@index([agentId, startTime])
+  @@index([projectId, startTime])
+  @@index([startTime])
+  @@index([parentSessionId])
+}
+
+model Skill {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  description  String   @default("")
+  skillMd      String   @default("")
+  contentHash  String   @default("")
+  version      Int      @default(1)
+  lastSyncedAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model BusinessMetric {
+  id           String   @id @default(cuid())
+  sessionId    String
+  userId       String
+  projectId    String
+  agentId      String
+  taskId       String   @unique
+  durationMs   Int      @default(0)
+  success      Boolean  @default(true)
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  totalTokens  Int      @default(0)
+  callCount    Int      @default(0)
+  models       String   @default("[]")
+  customData   String?
+  createdAt    DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([agentId, createdAt])
+  @@index([userId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([createdAt])
+}
+
+model Span {
+  id           String   @id @default(cuid())
+  sessionId    String
+  roundIndex   Int      @default(0)
+  turnId       Int      @default(0)
+  parentId     String?
+  branchId     String?
+  kind         String   @default("user")
+  name         String   @default("")
+  status       String   @default("success")
+  startTime    Int      @default(0)
+  duration     Int      @default(0)
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  cacheReadTokens  Int  @default(0)
+  cacheWriteTokens Int  @default(0)
+  totalTokens  Int      @default(0)
+  model        String?
+  input        String?
+  output       String?
+  error        String?
+  llmThinkDuration    Int?
+  agentReplyDuration  Int?
+  toolDuration        Int?
+  details     String?
+  content     String?
+  isForkPoint  Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  session      Session  @relation(fields: [sessionId], references: [id], onDelete:Cascade)
+
+  @@index([sessionId, roundIndex, turnId])
+  @@index([parentId])
+  @@index([branchId])
+  @@index([name, createdAt])
+  // 统计接口按 Span 活动时间跨会话过滤（/api/stats、/api/agents/stats、trend 等），
+  // 无单列索引时是全表扫；分桶循环里会重复扫，数据量上去后是主要瓶颈
+  @@index([createdAt])
+}
+
+model Experiment {
+  id               String   @id @default(cuid())
+  userId           String
+  name             String
+  type             String   @default("single")
+  agentId          String
+  evaluatorIdsJson String   @default("[]")
+  evaluatorConfigJson String @default("{}")
+  status           String   @default("draft")
+  scope            String   @default("")
+  watchMode        Boolean  @default(false)
+  watchEnabledAt   DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  cases            ExperimentCase[]
+  comments         ExperimentEvalComment[]
+
+  @@index([userId, createdAt])
+  @@index([agentId])
+  @@index([watchMode, agentId])
+}
+
+model ExperimentCase {
+  id                   String   @id @default(cuid())
+  experimentId         String
+  experiment           Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  sessionId            String?
+  input                String   @default("")
+  actualOutput         String   @default("")
+  referenceOutput      String?
+  evaluatorContextJson String?
+  createdAt            DateTime @default(now())
+
+  results              ExperimentEvalResult[]
+
+  @@index([experimentId])
+  @@index([sessionId])
+}
+
+model ExperimentEvalResult {
+  id           String   @id @default(cuid())
+  experimentId String
+  caseId       String
+  case         ExperimentCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  evaluatorId  String
+  status       String   @default("pending")
+  verdict      String?
+  summary      String?
+  score        Float?
+  pointsJson   String?
+  evidenceJson String?
+  humanScore   Float?
+  humanReason  String?
+  humanBy      String?
+  humanAt      DateTime?
+  errorMessage String?
+  attempts     Int      @default(0)
+  durationMs   Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([caseId, evaluatorId])
+  @@index([experimentId, evaluatorId])
+}
+
+model ExperimentEvalComment {
+  id           String   @id @default(cuid())
+  experimentId String
+  experiment   Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  caseId       String?
+  resultId     String?
+  user         String
+  body         String
+  createdAt    DateTime @default(now())
+
+  @@index([experimentId, createdAt])
+  @@index([caseId, createdAt])
+  @@index([resultId, createdAt])
+}
+
+model UserSettings {
+  id           String   @id @default(cuid())
+  user         String   @unique
+  settingsJson String   @default("{}")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+

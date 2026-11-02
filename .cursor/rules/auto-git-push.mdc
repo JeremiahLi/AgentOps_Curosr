@@ -1,0 +1,18 @@
+---
+description: After code changes, commit and push to origin (AgentOps_Curosr)
+alwaysApply: true
+---
+
+# Auto commit & push
+
+When you **finish a task that modified project files** (not question-only turns):
+
+1. Run `git status` and `git diff` to review what will ship.
+2. **Do not** stage or commit: `.env`, `.env.*`, `prisma/dev.db`, `node_modules/`, `.next/`, build logs, or secrets.
+3. Stage relevant changes, write a **short intentional commit message** (prefer `fix:` / `feat:` / `chore:` + why).
+4. Commit, then push: `git push origin HEAD` (remote: `https://github.com/JeremiahLi/AgentOps_Curosr.git`, branch usually `main`).
+5. If push fails (auth/network), report the error and tell the user what to run; do not claim success.
+
+A **stop hook** (`.cursor/hooks/auto-commit-push.js`) also commits unpushed work when an agent turn ends. Prefer your explicit commit message when you already committed; avoid duplicate empty commits.
+
+If the user only asked a question with **no file edits**, do not commit.
