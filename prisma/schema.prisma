@@ -30,6 +30,7 @@ model Agent {
 
   projects  Project[]
   sessions  Session[]
+  releases  Release[]
 }
 
 model Project {
@@ -87,6 +88,8 @@ model Session {
   /// 生成本会话的父会话工具调用 span id：时间窗覆盖本会话 startTime 的 kind ∈ ('tool_call','command') Span。
   /// 无外键；由 upload route 服务端时间窗匹配填充（fill-if-empty），不回填历史。
   parentSpanId     String?
+  /// 这次运行的版本指纹。空表示尚未归入任何 Release。
+  releaseId        String?
   rawData          String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -94,6 +97,7 @@ model Session {
   project          Project  @relation(fields: [projectId], references: [id])
   user             User     @relation(fields: [userId], references: [id])
   agent            Agent    @relation(fields: [agentId], references: [id])
+  release          Release? @relation(fields: [releaseId], references: [id])
   spans            Span[]
 
   @@index([userId, status, startTime])
@@ -101,6 +105,30 @@ model Session {
   @@index([projectId, startTime])
   @@index([startTime])
   @@index([parentSessionId])
+  @@index([releaseId])
+}
+
+model Release {
+  id           String   @id @default(cuid())
+  agentId      String
+  /// sha256 前 32 位。同一 Agent 下唯一。
+  fingerprint  String
+  /// 人读版本号，来自 agent.json 的 version
+  label        String   @default("")
+  model        String   @default("")
+  promptHash   String   @default("")
+  skillSetHash String   @default("")
+  configHash   String   @default("")
+  /// reported = 带了 prompt / skill / config 哈希；weak = 只有版本号或模型
+  quality      String   @default("weak")
+  firstSeenAt  DateTime @default(now())
+  lastSeenAt   DateTime @default(now())
+
+  agent    Agent     @relation(fields: [agentId], references: [id])
+  sessions Session[]
+
+  @@unique([agentId, fingerprint])
+  @@index([agentId, lastSeenAt])
 }
 
 model Skill {

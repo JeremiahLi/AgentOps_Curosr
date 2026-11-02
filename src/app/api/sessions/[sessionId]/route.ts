@@ -23,6 +23,7 @@ export async function GET(
       user: true,
       agent: true,
       project: true,
+      release: true,
       spans: { orderBy: [{ roundIndex: "asc" }, { turnId: "asc" }, { startTime: "asc" }] },
     },
   });
@@ -160,6 +161,14 @@ export async function GET(
     forkCount: session.forkCount,
     parentSessionId: session.parentSessionId,
     parentSpanId: session.parentSpanId,
+    release: session.release
+      ? {
+          label: session.release.label,
+          quality: session.release.quality,
+          fingerprint: session.release.fingerprint,
+          model: session.release.model,
+        }
+      : null,
     childCount,
     /**
      * 单次运行的过程事实：已恢复的失败只作背景，未恢复 / 循环 / 模型或回答失败 / 未交付才是异常。

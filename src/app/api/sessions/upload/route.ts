@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { computeOutcome, deriveAgentName, deriveTitle, workspaceLabel } from "@/lib/engine/ingest/derive";
+import { resolveRelease } from "@/lib/engine/ingest/release";
 import { isFailedStatus, normalizeSpanRecord } from "@/lib/engine/ingest/span-record";
 
 /** 无任何线索时使用的框架名兜底（也是 Agent.framework 的默认值，不要与实例名混用） */
@@ -21,6 +22,11 @@ export async function POST(request: Request) {
     startedAt?: string;
     endedAt?: string;
     model?: string;
+    /** 人读版本号。缺省时仍从 session_start span 读 */
+    agentVersion?: string;
+    promptHash?: string;
+    skillSetHash?: string;
+    configHash?: string;
     rawData?: string;
     spans?: Array<{
       spanId?: string;
@@ -67,6 +73,7 @@ export async function POST(request: Request) {
   // 而它会把每个会话的原始数据永久留在 Session 里（实测占库体 39%）。
   // 字段仍保留在请求类型里，旧采集端继续携带也不会报错，服务端忽略。
   const { sessionID, userId, projectId, startedAt, endedAt, model } = body;
+  const bodyVersion = typeof body.agentVersion === "string" ? body.agentVersion.trim() : "";
 
   if (!sessionID || !userId || !projectId) {
     return NextResponse.json(
@@ -133,7 +140,7 @@ function toIntOr(v: unknown, fallback: number): number {
     return null; // 无法确定时不下发，避免把 startTime 覆盖成入库时间
   })();
   var agentId = (sessionStartSpan && sessionStartSpan.agent_id) || null;
-  var agentVersion = (sessionStartSpan && sessionStartSpan.agent_version) || '1.0.0';
+  var agentVersion = bodyVersion || (sessionStartSpan && sessionStartSpan.agent_version) || "1.0.0";
 
   try {
     const { id: userIdDb } = await prisma.user.upsert({
@@ -362,6 +369,7 @@ function toIntOr(v: unknown, fallback: number): number {
         title: true,
         parentSpanId: true,
         startTime: true,
+        release: { select: { quality: true } },
         agent: { select: { name: true } },
       },
     });
@@ -386,6 +394,29 @@ function toIntOr(v: unknown, fallback: number): number {
       parentSpanId = await resolveParentSpanId(parentSessionId, childStartSec);
     }
 
+    const releaseDraft = resolveRelease({
+      agentVersion,
+      model,
+      promptHash: body.promptHash,
+      skillSetHash: body.skillSetHash,
+      configHash: body.configHash,
+    });
+    const release = await prisma.release.upsert({
+      where: { agentId_fingerprint: { agentId: agent.id, fingerprint: releaseDraft.fingerprint } },
+      update: { lastSeenAt: new Date(), label: releaseDraft.label, model: releaseDraft.model },
+      create: {
+        agentId: agent.id,
+        fingerprint: releaseDraft.fingerprint,
+        label: releaseDraft.label,
+        model: releaseDraft.model,
+        promptHash: releaseDraft.promptHash,
+        skillSetHash: releaseDraft.skillSetHash,
+        configHash: releaseDraft.configHash,
+        quality: releaseDraft.quality,
+      },
+    });
+    const keepStoredRelease = existingSession?.release?.quality === "reported" && releaseDraft.quality !== "reported";
+
     await prisma.session.update({
       where: { id: sessionID },
       data: {
@@ -394,6 +425,7 @@ function toIntOr(v: unknown, fallback: number): number {
         ...(titleFromDb ? { title: titleFromDb } : {}),
         ...(outcome ? { outcome } : {}),
         ...(shouldReassignAgent ? { agentId: agent.id } : {}),
+        ...(keepStoredRelease ? {} : { releaseId: release.id }),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(parentSpanId ? { parentSpanId } : {}),
         model: model || "",

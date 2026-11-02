@@ -325,6 +325,19 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             />
             {/* 终态与「过程失败」分开看：过程有失败不代表会话失败 */}
             <OutcomeBadge outcome={detail.outcome ?? ""} status={detail.status} />
+            {detail.release && (
+              <span
+                className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                title={
+                  detail.release.quality === "reported"
+                    ? `完整指纹 ${detail.release.fingerprint}`
+                    : `只有版本号或模型，指纹 ${detail.release.fingerprint}`
+                }
+              >
+                {detail.release.label ? `v${detail.release.label}` : "未标版本"}
+                {detail.release.quality === "reported" ? "" : " · 弱"}
+              </span>
+            )}
             {(detail.parentSessionId || detail.parentSpanId || detail.childCount > 0) && (
               <button
                 onClick={() => setTreeOpen(true)}

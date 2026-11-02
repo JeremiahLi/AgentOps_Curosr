@@ -1,5 +1,5 @@
-import type { SessionFacts } from "@/lib/engine/ingest/session-facts";
 import type { SessionDiagnosis } from "@/lib/engine/ingest/session-diagnosis";
+import type { SessionFacts } from "@/lib/engine/ingest/session-facts";
 
 export interface SpanNode {
   id: string;
@@ -91,6 +91,13 @@ export interface SessionDetail {
   parentSessionId: string | null;
   /** 父会话中派生本会话的工具调用 span id（时间窗匹配）；null = 未匹配/无父 */
   parentSpanId: string | null;
+  /** 这次运行的版本指纹；null = 尚未归入 */
+  release?: {
+    label: string;
+    quality: string;
+    fingerprint: string;
+    model: string;
+  } | null;
   /** 直接子会话数 */
   childCount: number;
   /** 单次运行的过程事实。旧响应可能缺这个字段 */
