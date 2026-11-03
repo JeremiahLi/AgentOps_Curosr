@@ -81,6 +81,22 @@ export function useCategoryPalette(): string[] {
 }
 
 /**
+ * 把 #rrggbb 略微掺回自身亮度的灰：只降饱和、不改色相。
+ * amount 约 0.36 时鲜艳度降一档，多色柱仍能靠色相区分。
+ */
+export function softenChartColor(hex: string, amount = 0.36): string {
+  const raw = hex.trim();
+  if (!/^#[0-9a-fA-F]{6}$/.test(raw)) return hex;
+  const r = parseInt(raw.slice(1, 3), 16);
+  const g = parseInt(raw.slice(3, 5), 16);
+  const b = parseInt(raw.slice(5, 7), 16);
+  const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+  const mix = (channel: number) => Math.round(channel * (1 - amount) + gray * amount);
+  const toHex = (n: number) => n.toString(16).padStart(2, "0");
+  return `#${toHex(mix(r))}${toHex(mix(g))}${toHex(mix(b))}`;
+}
+
+/**
  * 指标身份色：颜色用来标识「这是哪个指标卡」，而不是「这是卡里哪条序列」。
  * 卡内多序列用同色族梯度 / 线型 / 语义红区分，跨卡不再撞色。
  */

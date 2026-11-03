@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader, SegmentedControl } from "@/components/shell/page-header";
 import { KpiCard } from "@/components/shell/kpi-card";
 import { FancyBarChartH } from "@/components/charts/fancy-bar-chart-h";
 import { MultiLineTrendChart } from "@/components/charts/multi-line-trend-chart";
 import { AgentCompareTable } from "@/components/agent/agent-compare-table";
-import { useCategoryPalette } from "@/lib/use-chart-colors";
+import { softenChartColor, useCategoryPalette } from "@/lib/use-chart-colors";
 import { formatDuration, formatNumber, formatTokens, pctChange } from "@/lib/format";
 import { RANGE_OPTIONS, type StatsRange } from "@/lib/engine/stats/range";
 import { HEALTH_WINDOW_DAYS } from "@/lib/engine/stats/health";
@@ -43,6 +44,7 @@ interface TrendData {
 }
 
 export default function AgentBoardPage() {
+  const router = useRouter();
   const [range, setRange] = useState<StatsRange>("30d");
   const [metric, setMetric] = useState<AgentTrendMetric>("sessions");
   const [granularity, setGranularity] = useState<Granularity>("day");
@@ -50,6 +52,7 @@ export default function AgentBoardPage() {
   const [loading, setLoading] = useState(true);
   const [trend, setTrend] = useState<TrendData>({ labels: [], series: [] });
   const [trendLoading, setTrendLoading] = useState(false);
+  const [hoveredAgent, setHoveredAgent] = useState<string | null>(null);
   const palette = useCategoryPalette();
 
   useEffect(() => {
@@ -104,25 +107,30 @@ export default function AgentBoardPage() {
   // Agent → 颜色：按 Agent 名升序的位置分配，与两张图各自的排序、与时间档筛选都无关，
   // 所以同一个 Agent 在「会话数」和「工具失败率」两张图里恒定同色。
   // 基准取全量 data.agents（接口 LEFT JOIN，未使用的 Agent 也在），切档时颜色不会整体错位。
-  const agentColor = new Map<string, string>();
-  [...data.agents]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .forEach((a, i) => agentColor.set(a.name, palette[i % palette.length]));
-  // 用截断前的原始 name 查色；截断后的 label 只用于显示
-  const colorOf = (name: string) => agentColor.get(name) ?? palette[0];
-  // 会话数对比：0 会话的 Agent 不画（空柱子只是噪声），降序排名
-  const sessionData = data.agents
-    .filter((a) => a.sessions > 0)
-    .map((a) => ({ name: shortName(a.name), value: a.sessions, color: colorOf(a.name) }))
-    .sort((a, b) => b.value - a.value);
-  const failRateData = data.agents
-    .filter((a) => a.toolCalls >= 5 && a.toolFailRate != null)
-    .map((a) => ({
-      name: shortName(a.name),
-      value: Number(a.toolFailRate!.toFixed(2)),
-      color: colorOf(a.name),
-    }))
-    .sort((a, b) => b.value - a.value);
+  // 这两张图单独降一档饱和度；趋势折线和其他页面仍用原色板。
+  // agentKey 用完整名：截断后的 name 只用于显示，联动高亮和跳转都走它。
+  const { sessionData, failRateData } = useMemo(() => {
+    const agentColor = new Map<string, string>();
+    [...data.agents]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach((a, i) => agentColor.set(a.name, softenChartColor(palette[i % palette.length])));
+    const colorOf = (name: string) => agentColor.get(name) ?? softenChartColor(palette[0]);
+    // 会话数对比：0 会话的 Agent 不画（空柱子只是噪声），降序排名
+    const sessions = data.agents
+      .filter((a) => a.sessions > 0)
+      .map((a) => ({ agentKey: a.name, name: shortName(a.name), value: a.sessions, color: colorOf(a.name) }))
+      .sort((a, b) => b.value - a.value);
+    const failRates = data.agents
+      .filter((a) => a.toolCalls >= 5 && a.toolFailRate != null)
+      .map((a) => ({
+        agentKey: a.name,
+        name: shortName(a.name),
+        value: Number(a.toolFailRate!.toFixed(2)),
+        color: colorOf(a.name),
+      }))
+      .sort((a, b) => b.value - a.value);
+    return { sessionData: sessions, failRateData: failRates };
+  }, [data, palette]);
   // 两卡同一行，图表高度取两者行数较大者（对齐柱距便于横向对比），并封顶避免 20+ Agent 时卡片过高
   const chartH = Math.min(Math.max(210, Math.max(sessionData.length, failRateData.length) * 24), 420);
   const toolCallsTotal = data.agents.reduce((s, a) => s + a.toolCalls, 0);
@@ -191,6 +199,9 @@ export default function AgentBoardPage() {
                 ariaLabel="会话数"
                 yAxisInterval={0}
                 xInteger
+                activeId={hoveredAgent}
+                onActiveIdChange={setHoveredAgent}
+                onBarClick={(item) => router.push(`/agent-board/${encodeURIComponent(item.agentKey ?? item.name)}`)}
               />
             )}
           </CardContent>
@@ -214,6 +225,9 @@ export default function AgentBoardPage() {
                 valueFormatter={(v) => `${v.toFixed(1)}%`}
                 ariaLabel="工具失败率"
                 yAxisInterval={0}
+                activeId={hoveredAgent}
+                onActiveIdChange={setHoveredAgent}
+                onBarClick={(item) => router.push(`/agent-board/${encodeURIComponent(item.agentKey ?? item.name)}`)}
               />
             )}
           </CardContent>
