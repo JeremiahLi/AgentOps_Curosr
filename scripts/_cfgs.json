@@ -1,0 +1,13 @@
+{
+  "activeConfigId": "cfg_1792396666330",
+  "brief": [
+    {
+      "id": "cfg_1792396666330",
+      "name": "新配置",
+      "model": "deepseek-flash",
+      "baseUrl": "https://api.deepseek.com",
+      "keyLen": 35,
+      "active": true
+    }
+  ]
+}

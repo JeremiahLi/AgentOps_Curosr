@@ -3,6 +3,7 @@ import { callLlmAsJson, getActiveLlmConfig } from "../experiment/judge-llm";
 import { loadSlowCallReport } from "../stats/slow-call";
 import {
   evidenceHash,
+  fallbackFix,
   groundIssueNote,
   isMissingErrorSignature,
   missingErrorNote,
@@ -61,7 +62,17 @@ export async function buildAgentGuide(
   const spans = spanIds.length
     ? await db.span.findMany({
         where: { id: { in: spanIds } },
-        select: { id: true, name: true, input: true, output: true, error: true, details: true },
+        select: {
+          id: true,
+          name: true,
+          input: true,
+          output: true,
+          error: true,
+          details: true,
+          model: true,
+          inputTokens: true,
+          outputTokens: true,
+        },
       })
     : [];
   const byId = new Map(spans.map((span) => [span.id, span]));
@@ -83,7 +94,7 @@ export async function buildAgentGuide(
       const before = budget.calls;
       note = await conclude(config, budget, slow.issue.title, slot, slow.corpus);
       if (!note && before >= CALL_CAP) pending += 1;
-      if (note && note.grounded !== false) cacheRaw = await writeCache(db, agent.id, cacheRaw, slot, hashed, note);
+      if (note && note.grounded !== false && !note.modelError) cacheRaw = await writeCache(db, agent.id, cacheRaw, slot, hashed, note);
     }
     if (note) {
       notes["slow-span"] = note;
@@ -105,16 +116,17 @@ export async function buildAgentGuide(
     for (const item of issue.evidence) {
       const span = byId.get(item.spanId);
       if (!span) continue;
-      parts.push([span.name, span.input, span.error, span.output, span.details].filter(Boolean).join("\n"));
+      parts.push(formatSpanEvidence(item.sessionId, span));
     }
-    if (issue.sampleError) parts.push(issue.sampleError);
+    if (issue.sampleError) parts.push(`字段: sampleError=${issue.sampleError.slice(0, 200)}`);
     const corpus = parts.join("\n").slice(0, 4000);
     const hash = evidenceHash(issue.signature, corpus);
     let note = issue.llmNoteHash === hash ? readStoredNote(issue.llmNote) : null;
 
     if (!note) {
+      const evidence = issue.evidence[0];
       if (isMissingErrorSignature(issue.signature) || corpus.trim().length < 12) {
-        note = missingErrorNote();
+        note = missingErrorNote(evidence?.sessionId || "", evidence?.spanId || "");
       } else if (!config) {
         note = unconfiguredNote();
       } else if (budget.calls >= CALL_CAP) {
@@ -123,7 +135,7 @@ export async function buildAgentGuide(
       } else {
         note = await conclude(config, budget, issue.title, issue.signature, corpus);
       }
-      if (note && note.grounded !== false) {
+      if (note && note.grounded !== false && !note.modelError) {
         await db.issue.update({
           where: { id: issue.id },
           data: { llmNote: serializeNote(note), llmNoteHash: hash },
@@ -166,12 +178,49 @@ export async function buildAgentGuide(
 
 function unconfiguredNote(): IssueNote {
   return {
+    sessionId: "",
+    spanId: "",
+    field: "",
+    observed: "",
+    action: "",
+    verify: "",
     where: "",
     caused: "未配置裁判模型，下面只保留测到的事实",
-    layer: "insufficient",
     basis: "",
+    layer: "insufficient",
     grounded: true,
   };
+}
+
+function formatSpanEvidence(
+  sessionId: string,
+  span: {
+    id: string;
+    name: string;
+    input: string | null;
+    output: string | null;
+    error: string | null;
+    details: string | null;
+    model: string | null;
+    inputTokens: number;
+    outputTokens: number;
+  },
+): string {
+  const clip = (value: string | null, max: number) => (value || "").replace(/\s+/g, " ").trim().slice(0, max);
+  return [
+    `sessionId: ${sessionId}`,
+    `spanId: ${span.id}`,
+    `字段: name=${span.name || ""}`,
+    `字段: model=${span.model || ""}`,
+    `字段: inputTokens=${span.inputTokens}`,
+    `字段: outputTokens=${span.outputTokens}`,
+    `字段: error=${clip(span.error, 400)}`,
+    `字段: input=${clip(span.input, 400)}`,
+    `字段: output=${clip(span.output, 400)}`,
+    span.details ? `字段: details=${clip(span.details, 400)}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function conclude(
@@ -184,7 +233,7 @@ async function conclude(
   if (!config) return unconfiguredNote();
   if (budget.calls >= CALL_CAP) return null;
   budget.calls += 1;
-  return askNote(config, title, signature, corpus);
+  return askNote(config, budget, title, signature, corpus);
 }
 
 function readCache(raw: string): Record<string, CacheSlot> {
@@ -207,41 +256,76 @@ async function writeCache(db: Db, agentId: string, raw: string, slot: string, ha
 
 async function askNote(
   config: NonNullable<Awaited<ReturnType<typeof getActiveLlmConfig>>>,
+  budget: { calls: number },
   title: string,
   signature: string,
   corpus: string,
 ): Promise<IssueNote> {
+  const instruction = [
+    "你是轨迹诊断员。只根据证据给出最后一步根因，必须可验证、可修复。",
+    "输出 JSON：sessionId, spanId, field, observed, layer, action, verify。",
+    "sessionId 和 spanId 必须原样复制证据里的 sessionId: 和 spanId: 后面的值。",
+    "field 必须是证据里某一行「字段: 名字=原值」的名字。observed 必须是该行等号后的原值，且是证据里的连续子串。",
+    "layer 只能是 prompt、skill、tool、env。prompt 是某一段提示词，skill 是技能说明，tool 是工具参数，env 是模型请求参数或运行环境。",
+    "action 只写一处修改，必须同时包含 spanId、field、observed。例如：把 span span-1 的 outputTokens 对应的 max_tokens 从 16384 改小。",
+    "outputTokens 的值若是 1024、2048、4096、8192、16384、32768、65536，动作就是修改该 span 这次请求的 max_tokens，改到小于 observed。",
+    "error 为空或是（无错误文本）时，动作是把该 span 的 error 写成失败原因。",
+    "工具错误里出现了 input 中的 path 或 command 时，动作是修改该 span 的这个参数值。",
+    "verify 必须回到同一个 spanId 和同一个 field，写明改完后这个字段应变成什么。",
+    "禁止：推理能力不足、模型不够聪明、优化提示词、加强校验、建议关注。这些都不是可修复的事实。",
+    "一条结论只选一个字段。",
+  ].join("\n");
   try {
     const raw = await callLlmAsJson<unknown>(
       [
-        {
-          role: "system",
-          content: [
-            "你是 Agent 开发教练。只根据给定证据说明这一条问题，告诉开发者发生了什么、该改哪一层。",
-            "输出 JSON：where, caused, layer, basis。",
-            "layer 只能是 prompt、skill、tool、env、insufficient。",
-            "prompt 是提示词，skill 是技能说明，tool 是工具参数，env 是运行环境或模型调用参数，insufficient 是证据不够。",
-            "where 和 basis 必须是证据里的连续子串。证据不够时 layer 用 insufficient，where 和 basis 用空字符串。",
-            "不要编路径，不要建议重写整份提示词。caused 只用一句话，写清发生了什么。",
-          ].join("\n"),
-        },
+        { role: "system", content: instruction },
         { role: "user", content: `问题：${title}\n签名：${signature}\n证据：\n${corpus}` },
       ],
       config,
-      { temperature: 0, maxTokens: 600 },
+      { temperature: 0, maxTokens: 700 },
     );
-    return groundIssueNote(raw, corpus);
+    let note = groundIssueNote(raw, corpus);
+    if (!note.grounded && budget.calls < CALL_CAP) {
+      budget.calls += 1;
+      const retry = await callLlmAsJson<unknown>(
+        [
+          { role: "system", content: instruction },
+          {
+            role: "user",
+            content: `上次作废：${note.caused}\n请按格式重写一条。\n问题：${title}\n证据：\n${corpus}`,
+          },
+        ],
+        config,
+        { temperature: 0, maxTokens: 700 },
+      );
+      note = groundIssueNote(retry, corpus);
+    }
+    if (note.grounded && note.action) return note;
+    const fallback = fallbackFix(corpus);
+    if (fallback) {
+      return { ...fallback, modelError: `${note.caused}。下面的动作按该 span 的字段原值写成。` };
+    }
+    return note;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    const caused = /402|insufficient[_\s-]*balance/i.test(message)
-      ? "裁判模型余额不足，这次没有生成分析。先看上面测到的事实。"
-      : "裁判模型没有返回可用结论";
+    const modelError = /402|insufficient[_\s-]*balance/i.test(message)
+      ? `裁判模型 ${config.model} 余额不足，下面的动作按该 span 的字段原值写成。`
+      : `裁判模型没有返回可用结论，下面的动作按该 span 的字段原值写成。`;
+    const fallback = fallbackFix(corpus);
+    if (fallback) return { ...fallback, modelError };
     return {
+      sessionId: "",
+      spanId: "",
+      field: "",
+      observed: "",
+      action: "",
+      verify: "",
       where: "",
-      caused,
-      layer: "insufficient",
+      caused: modelError,
       basis: "",
+      layer: "insufficient",
       grounded: false,
+      modelError,
     };
   }
 }

@@ -6,7 +6,7 @@ import { ChevronDown, ExternalLink, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentIssue, IssueSeverity } from "@/lib/engine/stats/agent-detail";
 import type { AgentGuide } from "@/lib/engine/ingest/issue-guide";
-import type { IssueNote, NoteLayer } from "@/lib/engine/ingest/issue-note";
+import { IssueNoteView } from "@/components/agent/issue-note-view";
 
 const SEVERITY_META: Record<IssueSeverity, { label: string; bar: string; text: string; badge: string }> = {
   critical: {
@@ -38,34 +38,11 @@ const KIND_LABEL: Record<string, string> = {
   data_quality: "数据质量",
 };
 
-const LAYER_LABEL: Record<NoteLayer, string> = {
-  prompt: "提示词",
-  skill: "skill",
-  tool: "工具参数",
-  env: "运行环境",
-  insufficient: "证据不足",
-};
-
 const ANALYZED = new Set(["tool_failure", "error_cluster", "slow_span"]);
 
-function Conclusion({ note }: { note: IssueNote }) {
-  return (
-    <div className="mt-1.5 rounded-md bg-background/80 px-2 py-1.5 text-[12px] leading-5">
-      <p>
-        <span className="font-medium">分析：</span>
-        {note.caused}
-      </p>
-      {note.layer !== "insufficient" ? (
-        <p className="text-muted-foreground">改动面：{LAYER_LABEL[note.layer]}</p>
-      ) : null}
-      {note.where ? <p className="font-mono text-[11px] text-muted-foreground">依据：{note.where}</p> : null}
-    </div>
-  );
-}
-
 /**
- * 问题列表：事实 → 模型分析 → 链路。
- * 事实随详情接口马上出现。分析按证据哈希缓存，打开页面不会重复调用。
+ * 问题列表：事实 → 定位到 span 字段的修复动作。
+ * 事实随详情接口马上出现。模型结论按证据哈希缓存。
  */
 export function AgentIssueList({
   issues,
@@ -123,7 +100,7 @@ export function AgentIssueList({
                   先检查：{issue.suggestion}
                 </p>
                 {ANALYZED.has(issue.kind) && guide?.notes[issue.id] ? (
-                  <Conclusion note={guide.notes[issue.id]} />
+                  <IssueNoteView note={guide.notes[issue.id]} />
                 ) : null}
                 {ANALYZED.has(issue.kind) && !guide && !guideFailed ? (
                   <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">

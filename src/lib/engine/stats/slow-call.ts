@@ -104,7 +104,21 @@ export function describeSlowCall(
   const span = worst.primary;
   const ratio = span.duration / p95Duration;
   const who = span.model || span.name;
+  const record = [
+    `sessionId: ${span.sessionId}`,
+    `spanId: ${span.id}`,
+    `字段: model=${who}`,
+    `字段: outputTokens=${span.outputTokens}`,
+    `字段: inputTokens=${span.inputTokens}`,
+    `字段: llmThinkDuration=${span.thinkMs}`,
+    `字段: agentReplyDuration=${span.replyMs}`,
+    `字段: output.length=${span.outputChars}`,
+    span.inputHead ? `字段: input=${span.inputHead}` : "字段: input=",
+    span.error ? `字段: error=${clip(span.error, 120)}` : "字段: error=",
+  ].join("\n");
   const evidence = [
+    `sessionId: ${span.sessionId}`,
+    `spanId: ${span.id}`,
     `最慢一次是 ${who}，耗时 ${fmtDuration(span.duration)}，状态 ${span.status}`,
     `思考 ${fmtDuration(span.thinkMs)}，回复生成 ${fmtDuration(span.replyMs)}`,
     `输入 ${span.inputTokens} token，输出 ${span.outputTokens} token，缓存读 ${span.cacheReadTokens} token`,
@@ -117,15 +131,15 @@ export function describeSlowCall(
 
   const hitCap = OUTPUT_CAPS.has(span.outputTokens) && span.replyMs > Math.max(span.thinkMs, 1) * 3;
   const suggestion = hitCap
-    ? `输出正好 ${span.outputTokens} token，时间几乎都在回复生成。先核对这次调用的输出上限。`
+    ? `把 span ${span.id} 的 outputTokens 从 ${span.outputTokens} 下调：这次请求的 max_tokens 改为小于 ${span.outputTokens}。`
     : span.kind === "tool_call" || span.kind === "command"
-      ? `这次慢的是 ${span.name}，耗时 ${fmtDuration(span.duration)}。先看入参和它是否在等外部命令。`
-      : `先看 ${who} 在输入 ${span.inputTokens} token 时，为什么回复用了 ${fmtDuration(span.replyMs || span.duration)}。`;
+      ? `修改 span ${span.id} 的入参。这次慢的是 ${span.name}，耗时 ${fmtDuration(span.duration)}。`
+      : `先看 span ${span.id} 的 model=${who}，输入 ${span.inputTokens} token，回复用了 ${fmtDuration(span.replyMs || span.duration)}。`;
 
   return {
     p95Duration,
     sampleCount,
-    corpus: [...evidence, suggestion].join("\n"),
+    corpus: [record, ...evidence, suggestion].join("\n"),
     issue: {
       id: "slow-span",
       severity: ratio >= 2 ? "warning" : "info",

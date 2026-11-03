@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import type { AgentGuide, GuideItem } from "@/lib/engine/ingest/issue-guide";
 import type { NoteLayer } from "@/lib/engine/ingest/issue-note";
+import { IssueNoteView } from "@/components/agent/issue-note-view";
 
 const LAYER_LABEL: Record<NoteLayer, string> = {
   prompt: "提示词",
@@ -14,20 +14,11 @@ const LAYER_LABEL: Record<NoteLayer, string> = {
 };
 
 function ItemLine({ item }: { item: GuideItem }) {
-  const href = item.spanId
-    ? `/trace/${item.sessionId}?spanId=${encodeURIComponent(item.spanId)}`
-    : item.sessionId
-      ? `/trace/${item.sessionId}`
-      : "/issues";
   return (
     <li className="text-[13px] leading-5">
       <span className="font-medium">{item.title}</span>
       <span className="text-muted-foreground"> · 命中 {item.hitCount} 次</span>
-      <p className="text-muted-foreground">{item.note.caused}</p>
-      {item.note.where ? <p className="font-mono text-[11px] text-muted-foreground">依据：{item.note.where}</p> : null}
-      <Link href={href} className="text-[12px] text-primary underline-offset-2 hover:underline">
-        打开证据
-      </Link>
+      <IssueNoteView note={item.note} />
     </li>
   );
 }
@@ -37,7 +28,7 @@ export function AgentGuidePanel({ guide, failed }: { guide: AgentGuide | null; f
     <section className="rounded-lg border border-border/70 bg-card px-4 py-3">
       <h2 className="text-sm font-medium">开发指引</h2>
       <p className="mt-0.5 text-[12px] text-muted-foreground">
-        模型只根据每条问题的证据写结论，依据必须是原文里的句子。
+        每条结论落到一个 session、一个 span、一个字段，并给出改完后如何验证。
       </p>
       {guide === null && !failed ? (
         <p className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground">
