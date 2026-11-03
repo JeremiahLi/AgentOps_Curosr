@@ -56,48 +56,48 @@
 
 :root {
   color-scheme: light;
-  /* 背景比卡片深一档，让白色卡片自然浮起（浅色高级感的核心） */
-  --background: oklch(0.972 0.005 260);
-  --foreground: oklch(0.18 0.02 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.18 0.02 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.18 0.02 260);
-  --primary: oklch(0.52 0.17 275);
+  /* 画布比面板暗一档。结构色锁在冷灰（色相 250），品牌色只用于按钮、当前导航和焦点环。 */
+  --background: oklch(0.965 0.006 250);
+  --foreground: oklch(0.22 0.018 255);
+  --card: oklch(0.995 0.002 250);
+  --card-foreground: oklch(0.22 0.018 255);
+  --popover: oklch(0.995 0.002 250);
+  --popover-foreground: oklch(0.22 0.018 255);
+  --primary: oklch(0.48 0.13 258);
   --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.96 0.008 260);
-  --secondary-foreground: oklch(0.28 0.03 265);
-  --muted: oklch(0.965 0.005 260);
-  --muted-foreground: oklch(0.52 0.02 260);
-  --accent: oklch(0.95 0.02 270);
-  --accent-foreground: oklch(0.3 0.1 270);
-  --destructive: oklch(0.58 0.22 25);
+  --secondary: oklch(0.955 0.006 250);
+  --secondary-foreground: oklch(0.28 0.02 255);
+  --muted: oklch(0.955 0.005 250);
+  --muted-foreground: oklch(0.48 0.015 255);
+  --accent: oklch(0.945 0.012 255);
+  --accent-foreground: oklch(0.32 0.06 258);
+  --destructive: oklch(0.55 0.18 25);
   --destructive-foreground: oklch(0.99 0 0);
-  --success: oklch(0.6 0.15 155);
+  --success: oklch(0.55 0.12 155);
   --success-foreground: oklch(0.99 0 0);
-  --warning: oklch(0.72 0.16 70);
-  --warning-foreground: oklch(0.2 0.03 70);
-  --info: oklch(0.6 0.14 230);
+  --warning: oklch(0.68 0.13 75);
+  --warning-foreground: oklch(0.22 0.03 75);
+  --info: oklch(0.55 0.11 230);
   --info-foreground: oklch(0.99 0 0);
-  --border: oklch(0.92 0.005 260);
-  --input: oklch(0.91 0.008 260);
-  --ring: oklch(0.52 0.17 275);
-  /* 品牌渐变（紫→蓝青）：用于激活指示条、KPI 数字、logo 光环等点缀 */
-  --gradient-brand: linear-gradient(135deg, oklch(0.52 0.19 275), oklch(0.58 0.16 230));
-  --chart-1: oklch(0.58 0.2 270);
-  --chart-2: oklch(0.6 0.15 200);
-  --chart-3: oklch(0.65 0.17 155);
-  --chart-4: oklch(0.72 0.16 70);
-  --chart-5: oklch(0.62 0.22 15);
+  --border: oklch(0.9 0.008 250);
+  --input: oklch(0.9 0.008 250);
+  --ring: oklch(0.48 0.13 258);
+  /* 品牌渐变只用于 logo 描边和导航 3px 指示条 */
+  --gradient-brand: linear-gradient(160deg, oklch(0.48 0.13 258), oklch(0.55 0.11 220));
+  --chart-1: oklch(0.55 0.13 255);
+  --chart-2: oklch(0.58 0.1 200);
+  --chart-3: oklch(0.56 0.11 155);
+  --chart-4: oklch(0.68 0.12 75);
+  --chart-5: oklch(0.58 0.13 25);
   --radius: 0.5rem;
-  --sidebar: oklch(0.985 0.003 260);
-  --sidebar-foreground: oklch(0.22 0.02 260);
-  --sidebar-primary: oklch(0.52 0.17 275);
+  --sidebar: oklch(0.978 0.004 250);
+  --sidebar-foreground: oklch(0.22 0.018 255);
+  --sidebar-primary: oklch(0.48 0.13 258);
   --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.955 0.004 260);
-  --sidebar-accent-foreground: oklch(0.22 0.02 260);
-  --sidebar-border: oklch(0.92 0.005 260);
-  --sidebar-ring: oklch(0.52 0.17 275);
+  --sidebar-accent: oklch(0.95 0.006 250);
+  --sidebar-accent-foreground: oklch(0.22 0.018 255);
+  --sidebar-border: oklch(0.9 0.008 250);
+  --sidebar-ring: oklch(0.48 0.13 258);
   /* Trace viewer 专属颜色（浅色沿用工程配色） */
   --trace-llm: var(--info);
   --trace-tool: var(--success);
@@ -112,23 +112,31 @@
   --chart-bar-out: oklch(0.6 0.15 155 / 0.8);
   --chart-new: oklch(0.66 0.17 50);
   /* LLM 调用构成分解（高对比） */
-  --call-assistant: oklch(0.62 0.16 300);
-  --call-tool: oklch(0.6 0.15 155);
-  --call-fileread: oklch(0.58 0.12 195);
-  --call-user: oklch(0.65 0.1 220);
-  --call-sys: oklch(0.72 0.15 70);
-  --call-cache: oklch(0.6 0.14 230);
-  --call-cachewrite: oklch(0.68 0.16 350);
-  --call-tooldefs: oklch(0.55 0.18 260);
-  --call-other: oklch(0.55 0.02 260);
-  --call-output: oklch(0.68 0.16 50);
+  --call-assistant: oklch(0.58 0.12 300);
+  --call-tool: oklch(0.56 0.11 155);
+  --call-fileread: oklch(0.55 0.1 195);
+  --call-user: oklch(0.6 0.08 220);
+  --call-sys: oklch(0.68 0.12 75);
+  --call-cache: oklch(0.55 0.11 230);
+  --call-cachewrite: oklch(0.62 0.12 350);
+  --call-tooldefs: oklch(0.5 0.13 258);
+  --call-other: oklch(0.55 0.015 255);
+  --call-output: oklch(0.64 0.12 50);
 }
+
+/* 背景光斑位置。慢速漂移用自定义属性插值，避免整层位图重绘。 */
+@property --aurora-1-x { syntax: "<percentage>"; inherits: false; initial-value: 85%; }
+@property --aurora-1-y { syntax: "<percentage>"; inherits: false; initial-value: -8%; }
+@property --aurora-2-x { syntax: "<percentage>"; inherits: false; initial-value: -10%; }
+@property --aurora-2-y { syntax: "<percentage>"; inherits: false; initial-value: 30%; }
+@property --aurora-3-x { syntax: "<percentage>"; inherits: false; initial-value: 60%; }
+@property --aurora-3-y { syntax: "<percentage>"; inherits: false; initial-value: 110%; }
 
 .dark {
   /* Dark-first: GitHub Dark 配色（与 Agent Session Trace Viewer 一致） */
   color-scheme: dark;
   --background: #0d1117;
-  --gradient-brand: linear-gradient(135deg, oklch(0.72 0.14 275), oklch(0.75 0.11 230));
+  --gradient-brand: linear-gradient(160deg, oklch(0.74 0.11 258), oklch(0.76 0.09 220));
   --foreground: #e6edf3;
   --card: #161b22;
   --card-foreground: #e6edf3;
@@ -223,53 +231,57 @@
 }
 
 @layer utilities {
-  /* 主内容区光晕底色：极淡品牌色径向渐变，浅色下若隐若现（固定于视口，不随滚动） */
+  /* 极淡品牌光，固定在视口。位置用 36s 来回漂移，幅度很小。 */
   .bg-aurora {
     background-image:
-      radial-gradient(42rem 26rem at 85% -8%, oklch(0.6 0.14 275 / 0.07), transparent 65%),
-      radial-gradient(38rem 24rem at -10% 30%, oklch(0.62 0.12 230 / 0.06), transparent 65%),
-      radial-gradient(30rem 22rem at 60% 110%, oklch(0.62 0.12 200 / 0.05), transparent 65%);
+      radial-gradient(42rem 26rem at var(--aurora-1-x) var(--aurora-1-y), oklch(0.55 0.1 258 / 0.07), transparent 65%),
+      radial-gradient(38rem 24rem at var(--aurora-2-x) var(--aurora-2-y), oklch(0.58 0.08 220 / 0.06), transparent 65%),
+      radial-gradient(30rem 22rem at var(--aurora-3-x) var(--aurora-3-y), oklch(0.58 0.08 200 / 0.05), transparent 65%);
     background-attachment: fixed;
+    animation: aurora-drift 36s ease-in-out infinite alternate;
   }
-  /* 深色下加强品牌光晕，让暗面不发死 */
   .dark .bg-aurora {
     background-image:
-      radial-gradient(42rem 26rem at 85% -8%, oklch(0.72 0.14 275 / 0.13), transparent 65%),
-      radial-gradient(38rem 24rem at -10% 30%, oklch(0.75 0.11 230 / 0.1), transparent 65%),
-      radial-gradient(30rem 22rem at 60% 110%, oklch(0.75 0.11 200 / 0.08), transparent 65%);
+      radial-gradient(42rem 26rem at var(--aurora-1-x) var(--aurora-1-y), oklch(0.7 0.1 258 / 0.12), transparent 65%),
+      radial-gradient(38rem 24rem at var(--aurora-2-x) var(--aurora-2-y), oklch(0.72 0.08 220 / 0.09), transparent 65%),
+      radial-gradient(30rem 22rem at var(--aurora-3-x) var(--aurora-3-y), oklch(0.72 0.08 200 / 0.07), transparent 65%);
   }
-  /* 品牌渐变文字（KPI 大数字等） */
-  .text-gradient-brand {
-    background-image: var(--gradient-brand);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
+  @keyframes aurora-drift {
+    from {
+      --aurora-1-x: 85%;
+      --aurora-1-y: -8%;
+      --aurora-2-x: -10%;
+      --aurora-2-y: 30%;
+      --aurora-3-x: 60%;
+      --aurora-3-y: 110%;
+    }
+    to {
+      --aurora-1-x: 70%;
+      --aurora-1-y: 8%;
+      --aurora-2-x: 8%;
+      --aurora-2-y: 46%;
+      --aurora-3-x: 48%;
+      --aurora-3-y: 92%;
+    }
   }
-  /* 品牌渐变色块（指示条等） */
+  /* 品牌渐变色块：logo 描边、导航指示条 */
   .bg-brand-gradient {
     background-image: var(--gradient-brand);
   }
-  /* 卡片双层柔和阴影：近距贴边阴影 + 远距弥散投影 */
+  /* 面板只留贴边影，靠 1px ring 分层 */
   .shadow-card {
-    box-shadow:
-      0 1px 2px rgb(24 20 48 / 0.04),
-      0 8px 24px -12px rgb(30 20 60 / 0.12);
+    box-shadow: 0 1px 2px rgb(24 28 40 / 0.05);
   }
-  .shadow-card-hover {
-    box-shadow:
-      0 1px 2px rgb(24 20 48 / 0.05),
-      0 14px 32px -12px rgb(30 20 60 / 0.18);
-  }
-  /* 深色卡片阴影：换纯黑弥散，避免浅色紫影发灰 */
   .dark .shadow-card {
-    box-shadow:
-      0 1px 2px rgb(0 0 0 / 0.35),
-      0 8px 24px -12px rgb(0 0 0 / 0.5);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
   }
-  .dark .shadow-card-hover {
-    box-shadow:
-      0 1px 2px rgb(0 0 0 / 0.4),
-      0 14px 32px -12px rgb(0 0 0 / 0.6);
+  /* 路由切换时整页升起一次。template.tsx 会在每次导航重新挂载。 */
+  .page-enter {
+    animation: page-enter 380ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @keyframes page-enter {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
   }
   @keyframes slide-in-right {
     from { transform: translateX(100%); }
@@ -306,100 +318,58 @@
     background-size: 10% 100%;
   }
 
-  /* ===== 侧栏 HUD 装饰（仅深色模式生效） ===== */
-  /* 角落品牌辉光：紫→蓝青两团径向光，screen 混合提亮 */
+  /* 侧栏质感：静止的角落光和噪点。右缘发丝线不循环。 */
   .dark .hud-glow {
     background-image:
-      radial-gradient(26rem 16rem at 20% -12%, oklch(0.72 0.14 275 / 0.22), transparent 62%),
-      radial-gradient(22rem 14rem at 110% 22%, oklch(0.75 0.11 230 / 0.16), transparent 60%),
-      radial-gradient(18rem 12rem at 50% 112%, oklch(0.75 0.11 280 / 0.12), transparent 65%);
+      radial-gradient(26rem 16rem at 20% -12%, oklch(0.7 0.1 258 / 0.16), transparent 62%),
+      radial-gradient(22rem 14rem at 110% 22%, oklch(0.72 0.08 220 / 0.12), transparent 60%);
     mix-blend-mode: screen;
   }
-  /* SVG 噪点：抬质感、防止渐变断层 */
   .dark .hud-noise {
     opacity: 0.035;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
   }
-  /* 缓慢扫过的柔光：暗示系统在运行 */
-  .dark .hud-sweep {
-    background-image: linear-gradient(115deg, transparent 30%, oklch(0.72 0.14 275 / 0.18) 50%, transparent 70%);
-    filter: blur(28px);
-    animation: hud-sweep 9s ease-in-out infinite;
-  }
-  @keyframes hud-sweep {
-    0%   { transform: translate3d(0, 0, 0); opacity: 0.55; }
-    50%  { transform: translate3d(150%, 20%, 0); opacity: 0.95; }
-    100% { transform: translate3d(0, 0, 0); opacity: 0.55; }
-  }
-  /* 右边缘发丝线：中段发光、两端渐隐 */
   .dark .hud-hairline {
     background-image: linear-gradient(
       to bottom,
       transparent 0%,
-      oklch(0.72 0.14 275 / 0.45) 30%,
-      oklch(0.7 0.12 235 / 0.75) 50%,
-      oklch(0.75 0.11 230 / 0.45) 70%,
+      oklch(0.72 0.1 258 / 0.35) 30%,
+      oklch(0.74 0.08 220 / 0.6) 50%,
+      oklch(0.72 0.08 220 / 0.35) 70%,
       transparent 100%
     );
-    box-shadow: 0 0 12px 0 oklch(0.7 0.12 235 / 0.35);
   }
 
-  /* ===== 激活项：发光玻璃胶囊（仅深色模式） ===== */
-  /* 渐变描边（padding-box/border-box 双层背景）+ 收紧的外发光 + 呼吸 */
+  /* 当前项：静止的细描边，不做呼吸发光 */
   .dark .nav-pill {
     border: 1px solid transparent;
     background:
-      linear-gradient(oklch(0.24 0.02 260 / 0.72), oklch(0.24 0.02 260 / 0.72)) padding-box,
-      linear-gradient(120deg, oklch(0.72 0.14 275 / 0.75), oklch(0.7 0.12 235 / 0.55), oklch(0.75 0.11 230 / 0.75)) border-box;
-    box-shadow:
-      0 0 10px -2px oklch(0.7 0.12 235 / 0.32),
-      0 6px 18px -10px rgb(0 0 0 / 0.55),
-      inset 0 1px 0 rgb(255 255 255 / 0.06);
-    animation: nav-pill-breathe 3.2s ease-in-out infinite;
+      linear-gradient(oklch(0.22 0.015 255 / 0.8), oklch(0.22 0.015 255 / 0.8)) padding-box,
+      linear-gradient(120deg, oklch(0.72 0.1 258 / 0.5), oklch(0.7 0.06 230 / 0.28), oklch(0.74 0.08 220 / 0.5)) border-box;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
   }
-  @keyframes nav-pill-breathe {
-    0%, 100% {
-      box-shadow:
-        0 0 10px -2px oklch(0.7 0.12 235 / 0.32),
-        0 6px 18px -10px rgb(0 0 0 / 0.55),
-        inset 0 1px 0 rgb(255 255 255 / 0.06);
-    }
-    50% {
-      box-shadow:
-        0 0 13px -2px oklch(0.7 0.12 235 / 0.45),
-        0 6px 18px -10px rgb(0 0 0 / 0.55),
-        inset 0 1px 0 rgb(255 255 255 / 0.08);
-    }
-  }
-  /* 身后的品牌光晕（收紧：更小、更淡） */
-  .dark .nav-halo {
+  /* 指示条到位时缩放开一次，之后保持静止 */
+  .nav-indicator {
     background-image: var(--gradient-brand);
-    filter: blur(12px);
-    opacity: 0.28;
+    transform-origin: center;
+    animation: nav-indicator-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
   }
-  /* 左侧流动渐变指示条 */
-  .dark .nav-indicator-flow {
-    background-image: linear-gradient(180deg, oklch(0.72 0.14 275), oklch(0.75 0.11 230), oklch(0.72 0.14 275));
-    background-size: 100% 220%;
-    animation: nav-flow 2.6s linear infinite;
-    box-shadow: 0 0 10px 1px oklch(0.7 0.12 235 / 0.65);
+  .dark .nav-indicator {
+    box-shadow: 0 0 8px 0 oklch(0.72 0.08 220 / 0.4);
   }
-  @keyframes nav-flow {
-    0%   { background-position: 0% 0%; }
-    100% { background-position: 0% 220%; }
+  @keyframes nav-indicator-in {
+    from { opacity: 0; transform: translateY(-50%) scaleY(0.35); }
+    to { opacity: 1; transform: translateY(-50%) scaleY(1); }
   }
-  /* hover 聚光灯：跟随鼠标的径向微高亮（--mx 由组件写入，仅 hover 时显示） */
-  .dark .nav-spotlight {
-    background-image: none;
-  }
+  /* hover 聚光灯跟鼠标走，没有自动循环 */
   .dark .nav-spotlight:hover {
-    background-image: radial-gradient(110px 56px at var(--mx, 50%) 50%, oklch(0.7 0.12 235 / 0.12), transparent 72%);
+    background-image: radial-gradient(110px 56px at var(--mx, 50%) 50%, oklch(0.72 0.08 220 / 0.12), transparent 72%);
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .dark .hud-sweep,
-    .dark .nav-pill,
-    .dark .nav-indicator-flow {
+    .bg-aurora,
+    .page-enter,
+    .nav-indicator {
       animation: none;
     }
   }

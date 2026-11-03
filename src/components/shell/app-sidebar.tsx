@@ -88,11 +88,10 @@ export function AppSidebar() {
 
   return (
     <aside className="relative flex h-full w-60 shrink-0 flex-col overflow-hidden bg-sidebar/70 backdrop-blur-xl dark:bg-sidebar/85">
-      {/* HUD 装饰层（仅深色模式渲染出效果）：角落辉光 + 噪点 + 缓慢扫光 */}
+      {/* 静止的角落光和噪点，只在深色模式可见 */}
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <div className="hud-glow absolute inset-0" />
         <div className="hud-noise absolute inset-0" />
-        <div className="hud-sweep absolute -left-[40%] -top-[30%] h-[60%] w-[80%]" />
       </div>
 
       {/* 右边缘发丝线：中间实、两端渐隐（深色下中段发光） */}
@@ -104,7 +103,7 @@ export function AppSidebar() {
 
       {/* 品牌区：项目 logo + 渐变光环 + 柔光投影 */}
       <div className="relative flex h-14 items-center gap-2.5 px-4">
-        <div className="relative shrink-0 rounded-md bg-brand-gradient p-px shadow-[0_2px_12px_-2px_rgb(90_80_235/0.45)]">
+        <div className="relative shrink-0 rounded-md bg-brand-gradient p-px">
           <Image
             src="/logo.jpg"
             alt="LinkAI Insight"
@@ -185,27 +184,17 @@ export function AppSidebar() {
                       className={cn(
                         "relative flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] transition-all duration-150",
                         active
-                          ? "nav-pill bg-card font-medium text-primary shadow-sm ring-1 ring-foreground/[0.06] dark:bg-transparent dark:text-foreground dark:shadow-none dark:ring-0"
+                          ? "nav-pill bg-card font-medium text-primary ring-1 ring-foreground/[0.06] dark:bg-transparent dark:text-foreground dark:ring-0"
                           : "nav-spotlight text-muted-foreground hover:bg-foreground/[0.04] hover:text-sidebar-accent-foreground dark:hover:bg-transparent",
                       )}
                     >
                       {active && (
-                        <>
-                          {/* 身后的品牌光晕（收紧的小光斑） */}
-                          <span
-                            aria-hidden
-                            className="nav-halo pointer-events-none absolute left-1 top-1/2 h-6 w-10 -translate-y-1/2 rounded-full"
-                          />
-                          {/* 左侧流动渐变指示条 */}
-                          <span className="nav-indicator-flow absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-brand-gradient" />
-                        </>
+                        <span className="nav-indicator absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full" />
                       )}
                       <Icon
                         className={cn(
                           "relative h-4 w-4 shrink-0",
-                          active
-                            ? "text-primary dark:text-primary dark:drop-shadow-[0_0_6px_rgba(88,166,255,0.75)]"
-                            : "text-muted-foreground/70",
+                          active ? "text-primary" : "text-muted-foreground/70",
                         )}
                       />
                       <span className="relative">{item.label}</span>
@@ -221,7 +210,7 @@ export function AppSidebar() {
       {/* 底部用户卡片 */}
       <div className="relative p-3">
         <div className="flex items-center gap-2.5 rounded-xl border border-sidebar-border/60 bg-card/80 px-2.5 py-2 shadow-sm dark:bg-white/[0.04] dark:shadow-none">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-gradient text-[11px] font-medium text-white shadow-sm">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-medium text-primary-foreground">
             Pi
           </div>
           <div className="flex min-w-0 flex-1 flex-col">

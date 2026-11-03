@@ -73,7 +73,7 @@ function freshnessState(lastSpanAt: string | null, now: number) {
 }
 
 function FreshnessDot({ level }: { level: "green" | "amber" | "red" }) {
-  const cls = level === "green" ? "bg-emerald-500" : level === "amber" ? "bg-warning" : "bg-destructive";
+  const cls = level === "green" ? "bg-success" : level === "amber" ? "bg-warning" : "bg-destructive";
   return <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${cls}`} />;
 }
 
@@ -98,7 +98,7 @@ function TrendText({ percent, direction }: { percent: number | null; direction: 
   if (percent === null || direction === "flat") {
     return <span className="text-xs text-muted-foreground">持平</span>;
   }
-  const cls = direction === "up" ? "text-emerald-600 dark:text-emerald-400" : "text-destructive";
+  const cls = direction === "up" ? "text-success" : "text-destructive";
   const sign = direction === "up" ? "+" : "-";
   return (
     <span className={`text-xs tabular-nums ${cls}`}>
@@ -187,7 +187,7 @@ export default function DashboardPage() {
   } as const;
 
   return (
-    <div className="flex animate-in flex-col gap-5 p-6 duration-300 fade-in slide-in-from-bottom-2">
+    <div className="flex flex-col gap-5 p-6">
       <PageHeader
         title="概览"
         description="平台全局运行趋势 · 单点数据仅作图上锚点"
