@@ -1,8 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
 import { callLlmAsJson, getActiveLlmConfig } from "../experiment/judge-llm";
-import { loadSlowCallReport } from "../stats/slow-call";
+import { loadSlowCallReport, type SlowCallIssue } from "../stats/slow-call";
 import {
   evidenceHash,
+  explainRecordedIssue,
   fallbackFix,
   groundIssueNote,
   isMissingErrorSignature,
@@ -11,6 +12,7 @@ import {
   serializeNote,
   type IssueNote,
   type NoteLayer,
+  type RecordedSpan,
 } from "./issue-note";
 
 type Db = PrismaClient;
@@ -37,11 +39,6 @@ export interface AgentGuide {
 const LAYER_ORDER: NoteLayer[] = ["prompt", "skill", "tool", "env", "insufficient"];
 const CALL_CAP = 8;
 
-interface CacheSlot {
-  hash: string;
-  note: string;
-}
-
 export async function buildAgentGuide(
   db: Db,
   agentName: string,
@@ -50,13 +47,13 @@ export async function buildAgentGuide(
 ): Promise<AgentGuide | null> {
   const agent = await db.agent.findUnique({
     where: { name: agentName },
-    select: { id: true, analysisCache: true },
+    select: { id: true },
   });
   if (!agent) return null;
   const issues = await db.issue.findMany({
     where: { agentId: agent.id, status: { in: ["open", "confirmed"] } },
     orderBy: { hitCount: "desc" },
-    include: { evidence: { orderBy: { createdAt: "desc" }, take: 3 } },
+    include: { evidence: { orderBy: { createdAt: "desc" }, take: 12 } },
   });
   const spanIds = issues.flatMap((issue) => issue.evidence.map((item) => item.spanId).filter(Boolean));
   const spans = spanIds.length
@@ -64,12 +61,15 @@ export async function buildAgentGuide(
         where: { id: { in: spanIds } },
         select: {
           id: true,
+          sessionId: true,
+          kind: true,
           name: true,
           input: true,
           output: true,
           error: true,
           details: true,
           model: true,
+          duration: true,
           inputTokens: true,
           outputTokens: true,
         },
@@ -81,34 +81,21 @@ export async function buildAgentGuide(
   let pending = 0;
   const items: GuideItem[] = [];
   const notes: Record<string, IssueNote> = {};
-  let cacheRaw = agent.analysisCache || "";
 
   const slow = await loadSlowCallReport(db, agent.id, startMs);
-  if (slow) {
-    const slot = `slow:${rangeKey}`;
-    const hashed = evidenceHash(slot, slow.corpus);
-    const cached = readCache(cacheRaw)[slot];
-    let note = cached?.hash === hashed ? readStoredNote(cached.note) : null;
-    if (note && note.grounded === false) note = null;
-    if (!note) {
-      const before = budget.calls;
-      note = await conclude(config, budget, slow.issue.title, slot, slow.corpus);
-      if (!note && before >= CALL_CAP) pending += 1;
-      if (note && note.grounded !== false && !note.modelError) cacheRaw = await writeCache(db, agent.id, cacheRaw, slot, hashed, note);
-    }
-    if (note) {
-      notes["slow-span"] = note;
-      const link = slow.issue.links[0];
-      items.push({
-        issueId: "slow-span",
-        title: slow.issue.title,
-        signature: slot,
-        hitCount: 1,
-        sessionId: link?.sessionId || "",
-        spanId: link?.spanId || "",
-        note,
-      });
-    }
+  if (slow?.issue) {
+    const note = noteFromSlow(slow.issue);
+    notes["slow-span"] = note;
+    const link = slow.issue.links[0];
+    items.push({
+      issueId: "slow-span",
+      title: slow.issue.title,
+      signature: `slow:${rangeKey}`,
+      hitCount: 1,
+      sessionId: link?.sessionId || "",
+      spanId: link?.spanId || "",
+      note,
+    });
   }
 
   for (const issue of issues) {
@@ -124,9 +111,16 @@ export async function buildAgentGuide(
     let note = issue.llmNoteHash === hash ? readStoredNote(issue.llmNote) : null;
 
     if (!note) {
+      const recorded = issue.evidence.flatMap((item) => {
+        const span = byId.get(item.spanId);
+        return span ? [toRecordedSpan(item.sessionId, span)] : [];
+      });
+      const explained = explainRecordedIssue(recorded);
       const evidence = issue.evidence[0];
       if (isMissingErrorSignature(issue.signature) || corpus.trim().length < 12) {
-        note = missingErrorNote(evidence?.sessionId || "", evidence?.spanId || "");
+        note = explained ?? missingErrorNote(evidence?.sessionId || "", evidence?.spanId || "");
+      } else if (explained && /402|429|quota|余额|额度不足|rate limit/i.test(explained.observed)) {
+        note = explained;
       } else if (!config) {
         note = unconfiguredNote();
       } else if (budget.calls >= CALL_CAP) {
@@ -168,7 +162,7 @@ export async function buildAgentGuide(
   return {
     blocked,
     blockedReason: blocked
-      ? `${missing} / ${failureItems.length} 条已打开的失败问题没有错误文本。这些失败先补采集。慢调用仍按测到的模型和 token 分析。`
+      ? `${missing} / ${failureItems.length} 条已打开的失败问题没有错误文本。结论写在对应 span 上：空记录和一次真实调用分开。`
       : "",
     pending,
     groups,
@@ -182,6 +176,7 @@ function unconfiguredNote(): IssueNote {
     spanId: "",
     field: "",
     observed: "",
+    conclusion: "落在数据：未配置裁判模型，下面只保留测到的事实。",
     action: "",
     verify: "",
     where: "",
@@ -189,6 +184,52 @@ function unconfiguredNote(): IssueNote {
     basis: "",
     layer: "insufficient",
     grounded: true,
+  };
+}
+
+function noteFromSlow(issue: SlowCallIssue): IssueNote {
+  const link = issue.links[0];
+  return {
+    sessionId: link?.sessionId || "",
+    spanId: link?.spanId || "",
+    field: issue.field,
+    observed: issue.observed,
+    conclusion: issue.conclusion,
+    action: issue.suggestion,
+    verify: issue.verify,
+    layer: "env",
+    grounded: true,
+    caused: issue.suggestion,
+    where: issue.observed,
+    basis: issue.field,
+  };
+}
+
+function toRecordedSpan(
+  sessionId: string,
+  span: {
+    id: string;
+    kind: string;
+    name: string;
+    model: string | null;
+    duration: number;
+    inputTokens: number;
+    outputTokens: number;
+    output: string | null;
+    error: string | null;
+  },
+): RecordedSpan {
+  return {
+    sessionId,
+    spanId: span.id,
+    kind: span.kind,
+    name: span.name || "",
+    model: span.model || "",
+    duration: span.duration || 0,
+    inputTokens: span.inputTokens || 0,
+    outputTokens: span.outputTokens || 0,
+    outputChars: (span.output || "").length,
+    error: span.error || "",
   };
 }
 
@@ -236,24 +277,6 @@ async function conclude(
   return askNote(config, budget, title, signature, corpus);
 }
 
-function readCache(raw: string): Record<string, CacheSlot> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, CacheSlot>;
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-async function writeCache(db: Db, agentId: string, raw: string, slot: string, hash: string, note: IssueNote): Promise<string> {
-  const cache = readCache(raw);
-  cache[slot] = { hash, note: serializeNote(note) };
-  const next = JSON.stringify(cache);
-  await db.agent.update({ where: { id: agentId }, data: { analysisCache: next } });
-  return next;
-}
-
 async function askNote(
   config: NonNullable<Awaited<ReturnType<typeof getActiveLlmConfig>>>,
   budget: { calls: number },
@@ -262,8 +285,10 @@ async function askNote(
   corpus: string,
 ): Promise<IssueNote> {
   const instruction = [
-    "你是轨迹诊断员。只根据证据给出最后一步根因，必须可验证、可修复。",
-    "输出 JSON：sessionId, spanId, field, observed, layer, action, verify。",
+    "你是轨迹诊断员。先写一句可核对的结论，再写一处修改。",
+    "输出 JSON：sessionId, spanId, field, observed, layer, conclusion, action, verify。",
+    "conclusion 必须包含 spanId，并点明是组件、配置项、数据、判断中的哪一种。例如：落在配置项 outputTokens=16384，组件 model=spark-x2.6-4b，数据 span span-1。",
+    "只有 error 原文里出现 402、429、quota、余额、rate limit 时，结论才能写额度。",
     "sessionId 和 spanId 必须原样复制证据里的 sessionId: 和 spanId: 后面的值。",
     "field 必须是证据里某一行「字段: 名字=原值」的名字。observed 必须是该行等号后的原值，且是证据里的连续子串。",
     "layer 只能是 prompt、skill、tool、env。prompt 是某一段提示词，skill 是技能说明，tool 是工具参数，env 是模型请求参数或运行环境。",
@@ -272,8 +297,7 @@ async function askNote(
     "error 为空或是（无错误文本）时，动作是把该 span 的 error 写成失败原因。",
     "工具错误里出现了 input 中的 path 或 command 时，动作是修改该 span 的这个参数值。",
     "verify 必须回到同一个 spanId 和同一个 field，写明改完后这个字段应变成什么。",
-    "禁止：推理能力不足、模型不够聪明、优化提示词、加强校验、建议关注。这些都不是可修复的事实。",
-    "一条结论只选一个字段。",
+    "禁止写优化提示词、加强校验、建议关注。一条结论只选一个字段。",
   ].join("\n");
   try {
     const raw = await callLlmAsJson<unknown>(
@@ -318,6 +342,7 @@ async function askNote(
       spanId: "",
       field: "",
       observed: "",
+      conclusion: modelError,
       action: "",
       verify: "",
       where: "",

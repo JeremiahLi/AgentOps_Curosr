@@ -5,6 +5,7 @@ import { scoreHealth, successRateOf, HEALTH_WINDOW_DAYS, type HealthScore } from
 import { getAgentBoard, type AgentBoardRow } from "./agent-board";
 import { SQL_BAD, SQL_FINISHED, SQL_PARTIAL } from "./session-outcome";
 import { buildBucketKeys, bucketLabel, type TrendGranularity } from "./trend";
+import { explainRecordedIssue, isMissingErrorSignature, type RecordedSpan } from "../ingest/issue-note";
 import { loadSlowCallReport, type SlowSpanView } from "./slow-call";
 
 /**
@@ -37,6 +38,8 @@ export interface AgentIssue {
   kind: IssueKind;
   /** 一句话结论，如「bash 失败 252 次（19.1%）」 */
   title: string;
+  /** 落到组件 / 配置项 / 数据 span / 这次判断。界面加「结论：」前缀。 */
+  conclusion?: string;
   /** 证据：可直接核对的事实，2-4 条 */
   evidence: string[];
   /** 建议动作 */
@@ -469,26 +472,63 @@ export async function getAgentDetail(
     where: { agentId, status: { in: ["open", "confirmed", "fixed"] } },
     orderBy: { lastSeenAt: "desc" },
     include: {
-      evidence: { orderBy: { createdAt: "desc" }, take: 3 },
+      evidence: { orderBy: { createdAt: "desc" }, take: 12 },
     },
   });
+  const evidenceSpanIds = [
+    ...new Set(storedIssues.flatMap((issue) => issue.evidence.map((item) => item.spanId).filter(Boolean))),
+  ];
+  const recordedRows = evidenceSpanIds.length
+    ? await prisma.$queryRaw<Record<string, unknown>[]>`
+        SELECT sp.id AS id, sp.kind AS kind, sp.name AS name, COALESCE(sp.model, '') AS model,
+               sp.duration AS duration, sp.inputTokens AS inputTokens, sp.outputTokens AS outputTokens,
+               length(COALESCE(sp.output, '')) AS outputChars,
+               substr(COALESCE(sp.error, ''), 1, 180) AS error
+        FROM Span sp
+        WHERE sp.id IN (${Prisma.join(evidenceSpanIds)})
+      `
+    : [];
+  const recordedById = new Map<string, Omit<RecordedSpan, "sessionId">>();
+  for (const raw of recordedRows) {
+    const row = normalizeRow(raw);
+    recordedById.set(String(row.id), {
+      spanId: String(row.id),
+      kind: String(row.kind || ""),
+      name: String(row.name || ""),
+      model: String(row.model || ""),
+      duration: Number(row.duration) || 0,
+      inputTokens: Number(row.inputTokens) || 0,
+      outputTokens: Number(row.outputTokens) || 0,
+      outputChars: Number(row.outputChars) || 0,
+      error: String(raw.error ?? row.error ?? ""),
+    });
+  }
   for (const issue of storedIssues) {
     const severity = issue.severity === "critical" || issue.severity === "info" ? issue.severity : "warning";
     const kind = issue.kind === "tool_failure" ? "tool_failure" : "error_cluster";
+    const facts: RecordedSpan[] = issue.evidence.flatMap((item) => {
+      const span = recordedById.get(item.spanId);
+      return span ? [{ ...span, sessionId: item.sessionId }] : [];
+    });
+    const explained = explainRecordedIssue(facts);
+    const missing = isMissingErrorSignature(issue.signature);
     issues.push({
       id: issue.id,
       severity,
       kind,
       title: issue.title,
+      conclusion: explained?.conclusion || "",
       evidence: [
         `累计命中 ${issue.hitCount} 次`,
         issue.sampleError ? `样例：${issue.sampleError.slice(0, 160)}` : "没有留下错误原文",
       ],
       suggestion:
-        issue.status === "confirmed"
-          ? "已确认。同样的新失败会继续追加证据。"
-          : "在问题库里确认或忽略。忽略后，同样的新会话不会把它重新打开。",
-      links: issue.evidence.map((item, index) => ({
+        missing && explained
+          ? explained.action
+          : issue.status === "confirmed"
+            ? "已确认。同样的新失败会继续追加证据。"
+            : "在问题库里确认或忽略。忽略后，同样的新会话不会把它重新打开。",
+      links: issue.evidence.slice(0, 3).map((item, index) => ({
         sessionId: item.sessionId,
         spanId: item.spanId || undefined,
         label: `证据 ${index + 1}`,
@@ -496,8 +536,8 @@ export async function getAgentDetail(
     });
   }
 
-  // 3) 慢调用。证据是这次调用的模型和 token，分析结论由指引接口补上。
-  if (slowReport) {
+  // 3) 慢调用。只记达到该模型自身 P95 两倍的调用。倍数写在结论里。
+  if (slowReport?.issue) {
     issues.push(slowReport.issue);
   }
 
@@ -528,16 +568,23 @@ export async function getAgentDetail(
     });
   }
 
-  // 6) 数据质量：answer 类失败但 error 为空
+  // 6) 数据质量。已经有「无错误文本」聚类时，结论写在那一条上，这里不再重复一条空泛提示。
   const answerFailed = boardRow?.answerFailed ?? 0;
-  if (answerFailed > 0) {
+  const failureExplained = issues.some(
+    (item) => item.kind === "error_cluster" && Boolean(item.conclusion) && item.title.includes("无错误文本"),
+  );
+  if (answerFailed > 0 && !failureExplained) {
     issues.push({
       id: "data-quality",
       severity: "info",
       kind: "data_quality",
-      title: `近 30 天有 ${answerFailed} 个回答被标记失败但无错误信息`,
+      title: `近 30 天有 ${answerFailed} 个回答被标记失败`,
+      conclusion:
+        emptyErrorCount > 0
+          ? `落在数据：本区间 ${emptyErrorCount} 条失败 span 的 error 为空。失败原因没有写进这几条记录。`
+          : `落在数据：${answerFailed} 个失败回答的 error 不是空字符串，但聚类签名仍是无错误文本。打开对应 span 看 error 字段的原值。`,
       evidence: [`失败 span 中 ${emptyErrorCount} 条 error 字段为空（本区间样本）`],
-      suggestion: "采集端在 span 失败时应写入 error 摘要，否则失败原因无法归因，失败率也会被高估。",
+      suggestion: "打开失败 span，核对 error 字段里的原文。",
       links: [],
     });
   }

@@ -1,7 +1,7 @@
 /**
  *   npx tsx scripts/check-issue-note.ts
  */
-import { fallbackFix, groundIssueNote, isMissingErrorSignature, missingErrorNote } from "../src/lib/engine/ingest/issue-note";
+import { explainRecordedIssue, fallbackFix, groundIssueNote, isMissingErrorSignature, missingErrorNote } from "../src/lib/engine/ingest/issue-note";
 
 function assert(cond: unknown, message: string) {
   if (!cond) throw new Error(message);
@@ -28,6 +28,7 @@ const ok = groundIssueNote(
 );
 assert(ok.grounded && ok.layer === "tool", "落到证据字段上的动作应保留");
 assert(ok.spanId === "span-1" && ok.field === "path", "保留 span 和字段");
+assert(ok.conclusion.includes("span-1") && /组件|配置项|数据|判断/.test(ok.conclusion), "结论要点明粒度和 span");
 
 const vague = groundIssueNote(
   {
@@ -71,5 +72,56 @@ assert(fallback?.verify.includes("outputTokens"), "验证要回到同一字段")
 assert(isMissingErrorSignature("answer|err:（无错误文本）"), "无错误文本签名要识别出来");
 const missing = missingErrorNote("sess-1", "span-1");
 assert(missing.field === "error" && missing.action.includes("span-1"), "没有错误文本时动作是补这个 span 的 error");
+assert(missing.conclusion.includes("span-1"), "没有错误文本时结论也要落到这条 span");
+
+const mixed = explainRecordedIssue([
+  {
+    sessionId: "sess-1",
+    spanId: "empty-1",
+    kind: "answer",
+    name: "最终回答",
+    model: "openrouter/free",
+    duration: 1,
+    inputTokens: 0,
+    outputTokens: 0,
+    outputChars: 0,
+    error: "（无错误文本）",
+  },
+  {
+    sessionId: "sess-1",
+    spanId: "real-1",
+    kind: "llm_thinking",
+    name: "LLM 思考",
+    model: "spark-x2.6-4b",
+    duration: 91_452,
+    inputTokens: 0,
+    outputTokens: 0,
+    outputChars: 0,
+    error: "（无错误文本）",
+  },
+]);
+assert(mixed?.conclusion.includes("spark-x2.6-4b"), "结论要点名这次判断用的模型");
+assert(mixed?.conclusion.includes("real-1"), "结论要落到有耗时的那条 span");
+assert(mixed?.conclusion.includes("empty-1"), "空记录要单独点出 span");
+assert(mixed?.conclusion.includes("openrouter/free"), "空记录要带上它们的模型名");
+assert(!/额度不足|配额耗尽/.test(mixed?.conclusion || ""), "原文没有额度字样时不要写成额度问题");
+assert(mixed?.conclusion.includes("402"), "要写明查过的字段里没有额度原文");
+
+const quota = explainRecordedIssue([
+  {
+    sessionId: "sess-1",
+    spanId: "quota-1",
+    kind: "llm_thinking",
+    name: "LLM 思考",
+    model: "openrouter/free",
+    duration: 1200,
+    inputTokens: 10,
+    outputTokens: 0,
+    outputChars: 0,
+    error: "HTTP 402 insufficient balance",
+  },
+]);
+assert(quota?.conclusion.includes("额度") && quota.conclusion.includes("openrouter/free"), "error 写了 402 时结论是这个模型的额度");
+assert(quota?.spanId === "quota-1", "额度结论落到这条 span");
 
 console.log("issue note ok");

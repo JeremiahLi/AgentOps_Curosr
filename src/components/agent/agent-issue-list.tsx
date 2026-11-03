@@ -72,6 +72,8 @@ export function AgentIssueList({
       <ul className="space-y-2">
         {visible.map((issue) => {
           const meta = SEVERITY_META[issue.severity];
+          const note = ANALYZED.has(issue.kind) ? guide?.notes[issue.id] : undefined;
+          const conclusion = note?.conclusion || issue.conclusion;
           return (
             <li
               key={issue.id}
@@ -88,6 +90,12 @@ export function AgentIssueList({
                   </span>
                   <span className="text-[13px] font-medium leading-snug">{issue.title}</span>
                 </div>
+                {conclusion ? (
+                  <p className="mt-1 text-[12px] leading-relaxed text-foreground">
+                    <span className="font-medium">结论：</span>
+                    {conclusion}
+                  </p>
+                ) : null}
                 <ul className="mt-1 space-y-0.5">
                   {issue.evidence.map((e, i) => (
                     <li key={i} className="flex gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
@@ -99,9 +107,7 @@ export function AgentIssueList({
                 <p className="mt-1 text-[11px] leading-relaxed text-foreground/70">
                   先检查：{issue.suggestion}
                 </p>
-                {ANALYZED.has(issue.kind) && guide?.notes[issue.id] ? (
-                  <IssueNoteView note={guide.notes[issue.id]} />
-                ) : null}
+                {note ? <IssueNoteView note={{ ...note, conclusion: "" }} /> : null}
                 {ANALYZED.has(issue.kind) && !guide && !guideFailed ? (
                   <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin" />

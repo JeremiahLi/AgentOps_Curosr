@@ -378,28 +378,27 @@ export default function AgentDetailPage() {
 
         <Card className="lg:col-span-2">
           <CardHeader className="flex-row items-baseline justify-between space-y-0 border-b border-border/60 pb-2.5">
-            <CardTitle>最慢 span</CardTitle>
+            <CardTitle>各模型耗时</CardTitle>
             <span className="text-[11px] text-muted-foreground/80">
-              超过 span P95（{formatDuration(totals.p95Duration)}），同一次调用已合并
+              各模型最慢一次，对照该模型自身的 LLM P95
             </span>
           </CardHeader>
           <CardContent className="pt-2">
             {data.slowSpans.length === 0 ? (
               <p className="flex h-24 items-center justify-center text-sm text-muted-foreground">
-                该时间段没有超过 P95 的 span
+                该时间段没有带模型名的 LLM 调用
               </p>
             ) : (
               <ul className="divide-y divide-border/40">
                 {data.slowSpans.slice(0, 6).map((s) => (
                   <li key={s.id} className="flex items-center gap-2 py-1.5 text-[12px]">
                     <span className="w-[92px] shrink-0 truncate font-mono text-[11px] text-muted-foreground">
-                      {s.kind}
+                      {s.model || s.kind}
                     </span>
                     <span className="min-w-0 flex-1 truncate">
                       {s.name}
-                      {s.model ? <span className="ml-1 text-muted-foreground">{s.model}</span> : null}
                       <span className="ml-1 text-muted-foreground">
-                        入 {formatTokens(s.inputTokens)} · 出 {formatTokens(s.outputTokens)}
+                        自身 P95 {formatDuration(s.baselineMs)}（{s.baselineCount} 次）
                       </span>
                     </span>
                     {(s.status === "failed" || s.status === "error") && (
@@ -410,8 +409,13 @@ export default function AgentDetailPage() {
                     <span className="shrink-0 font-mono text-[11px] tabular-nums text-warning">
                       {formatDuration(s.duration)}
                     </span>
-                    <span className="w-[46px] shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground">
-                      {totals.p95Duration > 0 ? `${(s.duration / totals.p95Duration).toFixed(1)}×` : "—"}
+                    <span
+                      className={cn(
+                        "w-[52px] shrink-0 text-right font-mono text-[10px] tabular-nums",
+                        s.ratio >= 2 ? "text-warning" : "text-muted-foreground",
+                      )}
+                    >
+                      {s.baselineMs > 0 ? `${s.ratio.toFixed(1)}×` : "—"}
                     </span>
                     <Link
                       href={`/trace/${s.sessionId}?spanId=${encodeURIComponent(s.id)}`}
@@ -422,6 +426,11 @@ export default function AgentDetailPage() {
                   </li>
                 ))}
               </ul>
+            )}
+            {data.slowSpans.length > 0 && data.slowSpans.every((s) => s.ratio < 2) && (
+              <p className="mt-2 border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
+                没有模型调用达到自身 P95 的 2 倍，不记为慢调用。
+              </p>
             )}
             {data.dataNotes.length > 0 && (
               <p className="mt-2 border-t border-border/40 pt-2 text-[11px] text-muted-foreground">

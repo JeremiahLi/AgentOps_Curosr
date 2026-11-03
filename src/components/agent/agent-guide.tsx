@@ -28,7 +28,7 @@ export function AgentGuidePanel({ guide, failed }: { guide: AgentGuide | null; f
     <section className="rounded-lg border border-border/70 bg-card px-4 py-3">
       <h2 className="text-sm font-medium">开发指引</h2>
       <p className="mt-0.5 text-[12px] text-muted-foreground">
-        每条结论落到一个 session、一个 span、一个字段，并给出改完后如何验证。
+        每条先给结论，再落到一个组件、配置项、数据 span 或这次判断。
       </p>
       {guide === null && !failed ? (
         <p className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground">

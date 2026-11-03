@@ -8,9 +8,15 @@ export function IssueNoteView({ note }: { note: IssueNote }) {
     : note.sessionId
       ? `/trace/${note.sessionId}`
       : "";
-  if (!note.action && !note.caused) return null;
+  if (!note.action && !note.caused && !note.conclusion) return null;
   return (
     <div className="mt-1.5 space-y-0.5 rounded-md bg-background/80 px-2 py-1.5 text-[12px] leading-5">
+      {note.conclusion ? (
+        <p className="break-words">
+          <span className="font-medium">结论：</span>
+          {note.conclusion}
+        </p>
+      ) : null}
       {note.sessionId ? (
         <p className="break-all">
           <span className="font-medium">定位：</span>
