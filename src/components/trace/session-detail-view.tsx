@@ -32,7 +32,8 @@ import type { SessionDetail, SpanNode, RoundNode } from "./types";
  *
  * 从原来的右侧浮窗（TraceViewerPanel）搬过来的三栏视图：
  *   左 Span 层级树 / 中 Timeline（甘特 + Token 图）或 Transcript / 右 Span 详情。
- * 改成路由页之后去掉遮罩、拖拽宽度和全屏按钮，补上 404 / 加载失败分支
+ * 改成路由页之后去掉遮罩和全屏按钮；左侧树与中间列、中间列与右侧详情之间
+ * 可以按住左键拖动调宽。补上 404 / 加载失败分支
  * （浮窗里 fetch 失败只是不显示，整页失败会白屏）。
  *
  * 支持 ?spanId=xxx 直达：从「失败样例」这类深链进来时自动选中并滚动到该 span。
@@ -40,6 +41,71 @@ import type { SessionDetail, SpanNode, RoundNode } from "./types";
 interface Props {
   sessionId: string;
   onBack?: () => void;
+}
+
+const MIN_LEFT = 180;
+const MAX_LEFT = 520;
+const MIN_RIGHT = 280;
+const MAX_RIGHT = 760;
+const MIN_MID = 420;
+
+function clampPane(value: number, min: number, max: number) {
+  if (max < min) return Math.max(120, max);
+  return Math.min(Math.max(value, min), max);
+}
+
+/** 三栏之间的拖动手柄：按住左键改变相邻列宽。 */
+function PaneResizer({
+  label,
+  onDragStart,
+  onDrag,
+}: {
+  label: string;
+  onDragStart: () => void;
+  onDrag: (dx: number) => void;
+}) {
+  const originX = useRef(0);
+  const dragging = useRef(false);
+
+  const end = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      title={label}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragging.current = true;
+        originX.current = e.clientX;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        onDragStart();
+      }}
+      onPointerMove={(e) => {
+        if (!dragging.current) return;
+        onDrag(e.clientX - originX.current);
+      }}
+      onPointerUp={end}
+      onPointerCancel={end}
+      className="group relative z-30 w-0 shrink-0 cursor-col-resize touch-none"
+    >
+      <div className="absolute inset-y-0 -left-1.5 w-3" />
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-px -translate-x-1/2 bg-border group-hover:w-0.5 group-hover:bg-primary group-active:bg-primary" />
+    </div>
+  );
 }
 
 export function SessionDetailView({ sessionId, onBack }: Props) {
@@ -60,6 +126,10 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
   const [focusSpanId, setFocusSpanId] = useState<string | null>(null);
   // ?spanId= 只应用一次：之后用户手动点的选中项不能被刷新/重算覆盖
   const appliedLinkRef = useRef(false);
+  const [leftWidth, setLeftWidth] = useState(256);
+  const [rightWidth, setRightWidth] = useState(340);
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const paneOrigin = useRef({ left: 256, right: 340, total: 0 });
 
   const fetchDetail = useCallback(async () => {
     setLoading(true);
@@ -449,10 +519,13 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
         />
       )}
 
-      {/* 主体：三栏布局 */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* 主体：三栏布局。左右分隔条按住左键拖动，中间列和右侧列跟着变宽变窄。 */}
+      <div ref={layoutRef} className="flex flex-1 overflow-hidden">
         {/* 左：Span 层级树 */}
-        <aside className="flex w-64 shrink-0 flex-col overflow-hidden border-r border-border bg-card xl:w-72">
+        <aside
+          className="flex shrink-0 flex-col overflow-hidden bg-card"
+          style={{ width: leftWidth }}
+        >
           <div className="z-10 border-b border-border bg-card px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
             Span Hierarchy
           </div>
@@ -465,6 +538,21 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             />
           </div>
         </aside>
+
+        <PaneResizer
+          label="拖动调整中间列宽度"
+          onDragStart={() => {
+            paneOrigin.current = {
+              left: leftWidth,
+              right: rightWidth,
+              total: layoutRef.current?.clientWidth ?? 0,
+            };
+          }}
+          onDrag={(dx) => {
+            const { left, right, total } = paneOrigin.current;
+            setLeftWidth(clampPane(left + dx, MIN_LEFT, Math.min(MAX_LEFT, total - right - MIN_MID)));
+          }}
+        />
 
         {/* 中：Timeline / Transcript */}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -495,8 +583,26 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
           )}
         </main>
 
+        <PaneResizer
+          label="拖动调整右侧列宽度"
+          onDragStart={() => {
+            paneOrigin.current = {
+              left: leftWidth,
+              right: rightWidth,
+              total: layoutRef.current?.clientWidth ?? 0,
+            };
+          }}
+          onDrag={(dx) => {
+            const { left, right, total } = paneOrigin.current;
+            setRightWidth(clampPane(right - dx, MIN_RIGHT, Math.min(MAX_RIGHT, total - left - MIN_MID)));
+          }}
+        />
+
         {/* 右：Span 详情 */}
-        <aside className="w-[340px] shrink-0 overflow-y-auto scrollbar-thin border-l border-border bg-card xl:w-96">
+        <aside
+          className="shrink-0 overflow-y-auto scrollbar-thin bg-card"
+          style={{ width: rightWidth }}
+        >
           <div className="sticky top-0 z-10 border-b border-border bg-card p-3">
             <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               {selectedCall ? "Token 构成明细" : "Span 详情"}

@@ -36,6 +36,87 @@ interface Domain {
   end: number;
 }
 
+/** 光标锚点缩放。缩到全量时返回 null。 */
+function applyZoom(
+  current: Domain,
+  total: number,
+  factor: number,
+  frac: number,
+  minSpan: number,
+): Domain | null {
+  if (!(total > 0)) return null;
+  const span0 = Math.max(current.end - current.start, 1e-6);
+  const newSpan = Math.min(Math.max(span0 * factor, minSpan), total);
+  const f = Math.min(Math.max(frac, 0), 1);
+  const anchor = current.start + f * span0;
+  let ns = anchor - f * newSpan;
+  let ne = ns + newSpan;
+  if (ns < 0) {
+    ne -= ns;
+    ns = 0;
+  }
+  if (ne > total) {
+    const shift = ne - total;
+    ns = Math.max(0, ns - shift);
+    ne = total;
+  }
+  if (ns <= 1e-4 && ne >= total - 1e-4) return null;
+  return { start: ns, end: ne };
+}
+
+/** 平移窗口，碰到两端时夹住，不改变窗口宽度。 */
+function applyPan(origin: Domain, total: number, delta: number): Domain | null {
+  if (!(total > 0)) return null;
+  const span = origin.end - origin.start;
+  if (span >= total - 1e-4) return null;
+  let ns = origin.start + delta;
+  let ne = origin.end + delta;
+  if (ns < 0) {
+    ne -= ns;
+    ns = 0;
+  }
+  if (ne > total) {
+    const shift = ne - total;
+    ns = Math.max(0, ns - shift);
+    ne = total;
+  }
+  return { start: ns, end: ne };
+}
+
+/** 柱状图画布左右各留 4px，甘特图轨道本身就是时间轴。 */
+function trackBox(track: HTMLElement): { width: number; left: number } {
+  const rect = track.getBoundingClientRect();
+  const inset = track.querySelector("canvas") ? 4 : 0;
+  return {
+    width: Math.max(rect.width - inset * 2, 1),
+    left: rect.left + inset,
+  };
+}
+
+/** 光标在当前图绘图区上的水平比例（0–1），用作缩放锚点。 */
+function anchorFraction(target: EventTarget | null, clientX: number, clientY: number): number {
+  const el = target as HTMLElement | null;
+  const scope = el?.closest?.("[data-zoom-scope]") as HTMLElement | null;
+  let track = el?.closest?.("[data-zoom-track]") as HTMLElement | null;
+  if (!track && scope) {
+    const tracks = Array.from(scope.querySelectorAll<HTMLElement>("[data-zoom-track]"));
+    let best: HTMLElement | null = null;
+    let bestDist = Infinity;
+    for (const t of tracks) {
+      const r = t.getBoundingClientRect();
+      const dist = clientY < r.top ? r.top - clientY : clientY > r.bottom ? clientY - r.bottom : 0;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = t;
+      }
+    }
+    track = best;
+  }
+  if (!track) return 0.5;
+  const box = trackBox(track);
+  return Math.min(Math.max((clientX - box.left) / box.width, 0), 1);
+}
+
 export function TraceTimeline({
   spans,
   totalSeconds,
@@ -46,21 +127,45 @@ export function TraceTimeline({
   revealSpanId,
 }: Props) {
   const groups = useMemo(() => buildGroups(spans), [spans]);
+  const calls = useMemo(() => buildCalls(spans), [spans]);
 
-  // 缩放域（秒）：null = 全量。甘特图与下方两张图表各自独立缩放，互不联动。
+  // 甘特域是时间（秒）。下方两张柱状图共用「调用序号」窗口（等宽柱，光标才能钉在柱体上）。
+  // null = 全量。两套窗口互不联动。
   const [ganttDomain, setGanttDomain] = useState<Domain | null>(null);
   const [chartDomain, setChartDomain] = useState<Domain | null>(null);
   const gEff = ganttDomain ?? { start: 0, end: totalSeconds };
+  const cEff = chartDomain ?? { start: 0, end: calls.length };
   const ganttDomainRef = useRef(gEff);
+  const chartDomainRef = useRef(cEff);
+  const totalSecondsRef = useRef(totalSeconds);
+  const callsLenRef = useRef(calls.length);
   ganttDomainRef.current = gEff;
-  const axisTrackRef = useRef<HTMLDivElement>(null);
+  chartDomainRef.current = cEff;
+  totalSecondsRef.current = totalSeconds;
+  callsLenRef.current = calls.length;
   const scrollRef = useRef<HTMLDivElement>(null);
+  const suppressClickRef = useRef(false);
+  const panCleanupRef = useRef<(() => void) | null>(null);
+
+  const commitGantt = useCallback((d: Domain | null) => {
+    const total = totalSecondsRef.current;
+    if (!d || (d.start <= 1e-4 && d.end >= total - 1e-4)) setGanttDomain(null);
+    else setGanttDomain(d);
+  }, []);
+
+  const commitChart = useCallback((d: Domain | null) => {
+    const total = callsLenRef.current;
+    if (!d || total <= 0 || (d.start <= 1e-3 && d.end >= total - 1e-3)) setChartDomain(null);
+    else setChartDomain(d);
+  }, []);
 
   // 会话切换时复位缩放
   useEffect(() => {
     setGanttDomain(null);
     setChartDomain(null);
   }, [spans]);
+
+  useEffect(() => () => panCleanupRef.current?.(), []);
 
   // 深链定位：把甘特域收到目标 span 所在分组（声明在复位 effect 之后，保证这一帧以它为准）
   useEffect(() => {
@@ -78,47 +183,113 @@ export function TraceTimeline({
     });
   }, [revealSpanId, spans, groups, totalSeconds]);
 
-  // 滚轮缩放：甘特图内 → 缩放甘特时间轴；下方两张柱状图内 → 缩放图表域（两图共用）；
-  // 其余位置（中间列空白处等）→ 不拦截，交给浏览器原生上下滚动。
+  // 普通滚轮：不拦截，中间列整列上下滚动。
+  // Ctrl+滚轮：甘特图内以光标为中心缩放时间轴；柱状图内两图联动，以光标为中心缩放调用窗口。
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const handler = (e: WheelEvent) => {
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
       const target = e.target as HTMLElement | null;
       const scope = target?.closest?.("[data-zoom-scope]")?.getAttribute("data-zoom-scope");
-      if (scope !== "gantt" && scope !== "charts") return; // 原生滚动，不拦截
-      e.preventDefault();
-      const wantCharts = scope === "charts";
-      const d = wantCharts ? (chartDomain ?? { start: 0, end: totalSeconds }) : ganttDomainRef.current;
-      const span0 = Math.max(d.end - d.start, 0.001);
-      const factor = Math.exp(e.deltaY * 0.0012); // 向下滚 = 缩小（zoom out）
-      const minSpan = Math.max(totalSeconds / 2000, 0.05);
-      const newSpan = Math.min(Math.max(span0 * factor, minSpan), totalSeconds);
-      // 锚点：光标在当前缩放轨道（data-zoom-track）内的水平位置
-      const track = target?.closest?.("[data-zoom-track]") as HTMLElement | null;
-      const rect = track?.getBoundingClientRect();
-      let frac = 0.5;
-      if (rect && rect.width > 0) {
-        frac = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+      if (scope !== "gantt" && scope !== "charts") return;
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= 16;
+      else if (e.deltaMode === 2) dy *= el.clientHeight || 400;
+      const factor = Math.exp(dy * 0.0012); // 向下滚 = 缩小
+      const frac = anchorFraction(e.target, e.clientX, e.clientY);
+      if (scope === "charts") {
+        const total = callsLenRef.current;
+        if (total <= 0) return;
+        commitChart(applyZoom(chartDomainRef.current, total, factor, frac, 1));
+      } else {
+        const total = totalSecondsRef.current;
+        if (total <= 0) return;
+        commitGantt(applyZoom(ganttDomainRef.current, total, factor, frac, Math.max(total / 2000, 0.05)));
       }
-      const anchor = d.start + frac * span0;
-      let ns = anchor - (anchor - d.start) * (newSpan / span0);
-      let ne = ns + newSpan;
-      if (ns < 0) {
-        ne -= ns;
-        ns = 0;
-      }
-      if (ne > totalSeconds) {
-        const shift = ne - totalSeconds;
-        ns = Math.max(ns - shift, 0);
-        ne = totalSeconds;
-      }
-      if (wantCharts) setChartDomain({ start: ns, end: ne });
-      else setGanttDomain({ start: ns, end: ne });
     };
-    el.addEventListener("wheel", handler, { passive: false });
-    return () => el.removeEventListener("wheel", handler);
-  }, [totalSeconds, chartDomain]);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [commitChart, commitGantt]);
+
+  /** 按住左键左右拖动：甘特平移时间轴，柱状图平移共用的调用窗口。 */
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (!target || target.closest("[data-no-pan]")) return;
+      const scopeEl = target.closest("[data-zoom-scope]") as HTMLElement | null;
+      const scope = scopeEl?.getAttribute("data-zoom-scope");
+      if ((scope !== "gantt" && scope !== "charts") || !scopeEl) return;
+      const track =
+        (target.closest("[data-zoom-track]") as HTMLElement | null) ??
+        scopeEl.querySelector<HTMLElement>("[data-zoom-track]");
+      if (!track) return;
+      const { width } = trackBox(track);
+      const isChart = scope === "charts";
+      const origin = isChart ? chartDomainRef.current : ganttDomainRef.current;
+      const total = isChart ? callsLenRef.current : totalSecondsRef.current;
+      const span = origin.end - origin.start;
+      if (total <= 0 || span >= total - 1e-4) return;
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let moved = false;
+      let raf = 0;
+      let dx = 0;
+      const bag = {
+        cleanup: () => {},
+        onMove: (_ev: PointerEvent) => {},
+        onUp: () => {},
+      };
+
+      const apply = () => {
+        raf = 0;
+        const next = applyPan(origin, total, -(dx / width) * span);
+        if (isChart) commitChart(next);
+        else commitGantt(next);
+      };
+
+      bag.cleanup = () => {
+        if (raf) cancelAnimationFrame(raf);
+        document.body.style.cursor = "";
+        window.removeEventListener("pointermove", bag.onMove);
+        window.removeEventListener("pointerup", bag.onUp);
+        window.removeEventListener("pointercancel", bag.onUp);
+        if (panCleanupRef.current === bag.cleanup) panCleanupRef.current = null;
+      };
+
+      bag.onMove = (ev: PointerEvent) => {
+        dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (!moved) {
+          if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+          // 更像上下滑动时不抢走点击
+          if (Math.abs(dx) < Math.abs(dy)) {
+            bag.cleanup();
+            return;
+          }
+          moved = true;
+          document.body.style.cursor = "grabbing";
+        }
+        ev.preventDefault();
+        if (!raf) raf = requestAnimationFrame(apply);
+      };
+
+      bag.onUp = () => {
+        if (moved) suppressClickRef.current = true;
+        bag.cleanup();
+      };
+
+      panCleanupRef.current?.();
+      panCleanupRef.current = bag.cleanup;
+      window.addEventListener("pointermove", bag.onMove);
+      window.addEventListener("pointerup", bag.onUp);
+      window.addEventListener("pointercancel", bag.onUp);
+    },
+    [commitChart, commitGantt],
+  );
 
   const spanSec = gEff.end - gEff.start;
   const px = useCallback(
@@ -159,8 +330,15 @@ export function TraceTimeline({
     <div
       ref={scrollRef}
       onDoubleClick={handleDoubleClick}
-      className="flex-1 overflow-auto scrollbar-thin"
-      title="甘特图内滚轮缩放时间轴 · 柱状图内滚轮缩放图表 · 空白处滚轮上下滚动 · 双击复位 · 点击柱体查看构成 · 选中块后 ←/→ 逐块跳转"
+      onPointerDown={onPointerDown}
+      onClickCapture={(e) => {
+        if (!suppressClickRef.current) return;
+        suppressClickRef.current = false;
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      className="flex-1 select-none overflow-auto overscroll-contain scrollbar-thin"
+      title="滚轮上下滚动整列 · Ctrl+滚轮以光标为中心缩放（甘特独立，下方两张柱状图联动）· 按住左键左右拖动平移 · 双击复位 · 点击柱体查看构成"
     >
       <div className="relative min-w-[860px] p-4 pb-3 pr-10">
         {/* 时间轴（甘特图专用缩放域） */}
@@ -172,7 +350,7 @@ export function TraceTimeline({
               <span className="text-[10px]">已剔除轮间空闲</span>
             )}
           </div>
-          <div ref={axisTrackRef} data-zoom-track="1" className="flex flex-1">
+          <div data-zoom-track="1" className="flex flex-1">
             {ticks.map((t, i) => (
               <div key={i} className={cn("flex-1 pr-1", i === ticks.length - 1 && "text-right")}>
                 {fmtTick(t)}
@@ -223,7 +401,7 @@ export function TraceTimeline({
                     {group.title}
                   </span>
                 </div>
-                <div className="relative h-full flex-1 overflow-hidden">
+                <div data-zoom-track="1" className="relative h-full flex-1 overflow-hidden">
                   <div
                     className="absolute top-[5px] h-[18px] rounded-sm bg-[var(--trace-agent)] opacity-40 transition-[filter] hover:brightness-125"
                     style={{
@@ -265,7 +443,7 @@ export function TraceTimeline({
                       )}
                     </span>
                   </div>
-                  <div className="relative h-full flex-1 overflow-hidden">
+                  <div data-zoom-track="1" className="relative h-full flex-1 overflow-hidden">
                     {row.spans.map((s) => {
                       const left = px(s.relStart);
                       const width = Math.max(
@@ -314,7 +492,12 @@ export function TraceTimeline({
         <div data-zoom-scope="gantt" className="mt-1.5 flex items-center">
           <div className={cn(LABEL_W, "shrink-0")} />
           <div className="flex-1">
-            <DomainScrollbar domain={gEff} total={totalSeconds} onChange={setGanttDomain} />
+            <DomainScrollbar
+              domain={gEff}
+              total={totalSeconds}
+              onChange={commitGantt}
+              title="拖动平移甘特图"
+            />
           </div>
         </div>
 
@@ -322,10 +505,10 @@ export function TraceTimeline({
         <div data-zoom-scope="charts">
           <TokenCharts
             spans={spans}
-            domain={chartDomain ?? { start: 0, end: totalSeconds }}
+            domain={cEff}
             zoomed={chartDomain !== null}
-            totalSeconds={totalSeconds}
-            onDomainChange={setChartDomain}
+            windowTotal={calls.length}
+            onDomainChange={commitChart}
             onSelectCall={onSelectCall}
             highlightCallId={highlightCallId}
           />
@@ -358,42 +541,36 @@ function TokenCharts({
   spans,
   domain,
   zoomed,
-  totalSeconds,
+  windowTotal,
   onDomainChange,
   onSelectCall,
   highlightCallId,
 }: {
   spans: TraceSpan[];
+  /** 调用序号窗口：[start, end)，与甘特时间轴无关；两图共用 */
   domain: Domain;
   zoomed: boolean;
-  totalSeconds: number;
-  onDomainChange: (d: Domain) => void;
+  windowTotal: number;
+  onDomainChange: (d: Domain | null) => void;
   onSelectCall?: (callId: string, view: "prompt" | "new") => void;
   highlightCallId?: string | null;
 }) {
   const lineRef = useRef<HTMLCanvasElement>(null);
   const barRef = useRef<HTMLCanvasElement>(null);
-  const slotsRef = useRef<Slot[]>([]);
 
   const calls = useMemo(() => buildCalls(spans), [spans]);
 
-  // 可视域内的调用（按调用起点落在域内判定）
-  const visible = useMemo(
-    () => calls.filter((c) => c.time >= domain.start - 0.001 && c.time <= domain.end + 0.001),
-    [calls, domain],
-  );
-
-  // Round 分区：可视域内连续同 Round 的调用槽位区间
+  // Round 分区：窗口内连续同 Round 的调用（下标是全局序号，方便按窗口平移）
   const roundRanges = useMemo(() => {
     const ranges: Array<{ roundIndex: number; start: number; end: number }> = [];
-    visible.forEach((call, i) => {
-      const ri = call.roundIndex;
+    calls.forEach((call, i) => {
+      if (i >= domain.end || i + 1 <= domain.start) return;
       const last = ranges[ranges.length - 1];
-      if (last && last.roundIndex === ri) last.end = i;
-      else ranges.push({ roundIndex: ri, start: i, end: i });
+      if (last && last.roundIndex === call.roundIndex) last.end = i;
+      else ranges.push({ roundIndex: call.roundIndex, start: i, end: i });
     });
     return ranges;
-  }, [visible]);
+  }, [calls, domain]);
 
   const setupCanvas = (canvas: HTMLCanvasElement, cssH: number) => {
     const parent = canvas.parentElement;
@@ -455,52 +632,63 @@ function TokenCharts({
     ctx.textBaseline = "alphabetic";
   };
 
-  const slotLayout = (w: number): Slot[] => {
-    const n = visible.length;
-    if (n === 0) return [];
-    const slotW = w / n;
-    return visible.map((call, i) => ({ call, cx: slotW * (i + 0.5) }));
-  };
+  /** 等宽槽位：调用 i 占 [i, i+1)，按窗口平移后中心仍落在光标锚点上 */
+  const layoutSlots = useCallback(
+    (plotW: number, originX: number): Slot[] => {
+      const span = Math.max(domain.end - domain.start, 1e-6);
+      const list: Slot[] = [];
+      for (let i = 0; i < calls.length; i++) {
+        if (i >= domain.end || i + 1 <= domain.start) continue;
+        list.push({
+          call: calls[i],
+          cx: originX + ((i + 0.5 - domain.start) / span) * plotW,
+        });
+      }
+      return list;
+    },
+    [calls, domain],
+  );
 
-  /** Round 分区背景：交替底色 + 分隔线 + 顶部 Round 标签（slotW 为槽位宽） */
-  const drawRoundBands = (
-    ctx: CanvasRenderingContext2D,
-    slotW: number,
-    top: number,
-    bottom: number,
-  ) => {
-    if (roundRanges.length === 0) return;
-    const h0 = 4; // 槽位布局的整体左偏移（与柱体 x 偏移一致）
-    roundRanges.forEach((r, i) => {
-      const x0 = h0 + slotW * r.start;
-      const w0 = slotW * (r.end - r.start + 1);
-      // 交替底色
-      if (i % 2 === 1) {
-        ctx.globalAlpha = 0.06;
-        ctx.fillStyle = cssVar("--muted-foreground", "#8b949e");
-        ctx.fillRect(x0, top, w0, bottom - top);
-        ctx.globalAlpha = 1;
-      }
-      // 分隔线（每段起点，首段除外）
-      if (i > 0) {
-        ctx.strokeStyle = cssVar("--chart-grid", "rgba(48,54,61,0.55)");
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(x0, top);
-        ctx.lineTo(x0, bottom);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-      // 顶部 Round 标签（区间足够宽时）
-      if (w0 > 44) {
-        ctx.fillStyle = cssVar("--muted-foreground", "#8b949e");
-        ctx.font = "9px ui-monospace, monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(`Round ${r.roundIndex + 1}`, x0 + w0 / 2, 9);
-      }
-    });
-    ctx.textAlign = "left";
-  };
+  /** Round 分区背景：交替底色 + 分隔线 + 顶部 Round 标签 */
+  const drawRoundBands = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      plotW: number,
+      originX: number,
+      top: number,
+      bottom: number,
+    ) => {
+      if (roundRanges.length === 0) return;
+      const span = Math.max(domain.end - domain.start, 1e-6);
+      roundRanges.forEach((r, i) => {
+        const x0 = originX + ((r.start - domain.start) / span) * plotW;
+        const w0 = ((r.end - r.start + 1) / span) * plotW;
+        if (i % 2 === 1) {
+          ctx.globalAlpha = 0.06;
+          ctx.fillStyle = cssVar("--muted-foreground", "#8b949e");
+          ctx.fillRect(x0, top, w0, bottom - top);
+          ctx.globalAlpha = 1;
+        }
+        if (i > 0) {
+          ctx.strokeStyle = cssVar("--chart-grid", "rgba(48,54,61,0.55)");
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(x0, top);
+          ctx.lineTo(x0, bottom);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        if (w0 > 44) {
+          ctx.fillStyle = cssVar("--muted-foreground", "#8b949e");
+          ctx.font = "9px ui-monospace, monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(`Round ${r.roundIndex + 1}`, x0 + w0 / 2, 9);
+        }
+      });
+      ctx.textAlign = "left";
+    },
+    [roundRanges, domain],
+  );
 
   /** 图 1：上下文规模——每次调用的 prompt（堆叠：新增在下、复用在上） */
   const drawPrompt = useCallback(() => {
@@ -513,11 +701,13 @@ function TokenCharts({
     const h = cssH;
     const top = 18;
     const bottom = h - 8;
-    const slots = slotLayout(w - 8);
-    slotsRef.current = slots;
+    const originX = 4;
+    const plotW = Math.max(w - 8, 1);
+    const span = Math.max(domain.end - domain.start, 1e-6);
+    const slots = layoutSlots(plotW, originX);
     const maxPrompt = Math.max(...slots.map((s) => s.call.prompt), 1);
     const scale = (v: number) => (v / maxPrompt) * (bottom - top);
-    const barW = slots.length > 0 ? Math.min(Math.max(((w - 8) / slots.length) * 0.55, 6), 30) : 0;
+    const barW = slots.length > 0 ? Math.min(Math.max((plotW / span) * 0.55, 6), 30) : 0;
     const baseY = bottom;
     const showNums = barW >= 12; // 柱宽足够时才绘制数字，避免全览时密集噪点
 
@@ -528,7 +718,7 @@ function TokenCharts({
     ctx.clip();
 
     drawGrid(ctx, w, h, maxPrompt, 3, top, bottom);
-    if (slots.length > 0) drawRoundBands(ctx, (w - 8) / slots.length, top, bottom);
+    if (slots.length > 0) drawRoundBands(ctx, plotW, originX, top, bottom);
 
     // 堆叠：缓存读（复用）贴基线，新增叠在最上方
     const freshColor = cssVar("--chart-new", "#f0883e");
@@ -537,7 +727,7 @@ function TokenCharts({
       const freshH = scale(s.call.fresh);
       const reuseH = scale(s.call.reuse);
       const totalH = freshH + reuseH;
-      const x = s.cx - barW / 2 + 4;
+      const x = s.cx - barW / 2;
       if (reuseH > 0) {
         ctx.fillStyle = reuseColor;
         ctx.fillRect(x, baseY - reuseH, barW, reuseH);
@@ -558,10 +748,10 @@ function TokenCharts({
       ctx.font = "9px ui-monospace, monospace";
       ctx.textAlign = "center";
       ctx.fillStyle = cssVar("--foreground", "#e6edf3");
-      ctx.fillText(fmtTokShort(s.call.prompt), s.cx + 4, Math.max(baseY - totalH - 4, 11));
+      ctx.fillText(fmtTokShort(s.call.prompt), s.cx, Math.max(baseY - totalH - 4, 11));
     }
     ctx.restore();
-  }, [visible, roundRanges, highlightCallId]);
+  }, [layoutSlots, drawRoundBands, domain, highlightCallId]);
 
   /** 图 2：新增输入构成——柱高为真实新增（未命中缓存），分段为按字符占比分摊的估算 */
   const drawFresh = useCallback(() => {
@@ -574,10 +764,13 @@ function TokenCharts({
     const h = cssH;
     const top = 18;
     const bottom = h - 8;
-    const slots = slotLayout(w - 8);
+    const originX = 4;
+    const plotW = Math.max(w - 8, 1);
+    const span = Math.max(domain.end - domain.start, 1e-6);
+    const slots = layoutSlots(plotW, originX);
     const maxFresh = Math.max(...slots.map((s) => s.call.fresh), 1);
     const scale = (v: number) => (v / maxFresh) * (bottom - top);
-    const barW = slots.length > 0 ? Math.min(Math.max(((w - 8) / slots.length) * 0.55, 6), 30) : 0;
+    const barW = slots.length > 0 ? Math.min(Math.max((plotW / span) * 0.55, 6), 30) : 0;
     const baseY = bottom;
 
     ctx.clearRect(0, 0, cssW, cssH);
@@ -587,12 +780,12 @@ function TokenCharts({
     ctx.clip();
 
     drawGrid(ctx, w, h, maxFresh, 3, top, bottom);
-    if (slots.length > 0) drawRoundBands(ctx, (w - 8) / slots.length, top, bottom);
+    if (slots.length > 0) drawRoundBands(ctx, plotW, originX, top, bottom);
 
     // 新增来源构成：自下而上堆叠（part.value 之和恰等于 call.fresh）
     for (const s of slots) {
       let yCursor = baseY;
-      const x = s.cx - barW / 2 + 4;
+      const x = s.cx - barW / 2;
       for (const part of s.call.parts) {
         const segH = scale(part.value);
         if (segH <= 0) continue;
@@ -611,11 +804,11 @@ function TokenCharts({
         ctx.fillStyle = cssVar("--foreground", "#e6edf3");
         ctx.font = "9px ui-monospace, monospace";
         ctx.textAlign = "center";
-        ctx.fillText(fmtTokShort(s.call.fresh), s.cx + 4, Math.max(yCursor - 4, 12));
+        ctx.fillText(fmtTokShort(s.call.fresh), s.cx, Math.max(yCursor - 4, 12));
       }
     }
     ctx.restore();
-  }, [visible, roundRanges, highlightCallId]);
+  }, [layoutSlots, drawRoundBands, domain, highlightCallId]);
 
   const drawAll = useCallback(() => {
     drawPrompt();
@@ -639,25 +832,26 @@ function TokenCharts({
     };
   }, [drawAll]);
 
-  /** 点击柱体：按槽位定位调用，通知右栏展示构成明细 */
-  const slotIndexFromEvent = (e: React.MouseEvent<HTMLCanvasElement>): number => {
+  /** 点击柱体：按窗口内的调用序号定位，通知右栏展示构成明细 */
+  const indexFromEvent = (e: React.MouseEvent<HTMLCanvasElement>): number => {
     const canvas = e.currentTarget;
-    const w = canvas.clientWidth - 8;
-    const n = slotsRef.current.length;
-    if (n === 0) return -1;
-    const slotW = w / n;
-    const i = Math.floor(e.nativeEvent.offsetX / slotW);
-    return i >= 0 && i < n ? i : -1;
+    const plotW = Math.max(canvas.clientWidth - 8, 1);
+    const span = Math.max(domain.end - domain.start, 1e-6);
+    const idx = domain.start + ((e.nativeEvent.offsetX - 4) / plotW) * span;
+    const i = Math.floor(idx + 1e-6);
+    if (i < 0 || i >= calls.length) return -1;
+    if (i >= domain.end || i + 1 <= domain.start) return -1;
+    return i;
   };
 
   const handlePromptClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const i = slotIndexFromEvent(e);
-    if (i >= 0) onSelectCall?.(slotsRef.current[i].call.id, "prompt");
+    const i = indexFromEvent(e);
+    if (i >= 0) onSelectCall?.(calls[i].id, "prompt");
   };
 
   const handleFreshClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const i = slotIndexFromEvent(e);
-    if (i >= 0) onSelectCall?.(slotsRef.current[i].call.id, "new");
+    const i = indexFromEvent(e);
+    if (i >= 0) onSelectCall?.(calls[i].id, "new");
   };
 
   const legendSwatch = (colorVar: string, label: string, title?: string) => (
@@ -699,7 +893,12 @@ function TokenCharts({
         </div>
         {/* 柱状图底部进度条 */}
         <div className="mt-1.5">
-          <DomainScrollbar domain={domain} total={totalSeconds} onChange={onDomainChange} />
+          <DomainScrollbar
+            domain={domain}
+            total={windowTotal}
+            onChange={onDomainChange}
+            title="拖动平移柱状图（两图联动）"
+          />
         </div>
       </div>
 
@@ -734,7 +933,12 @@ function TokenCharts({
         </div>
         {/* 柱状图底部进度条 */}
         <div className="mt-1.5">
-          <DomainScrollbar domain={domain} total={totalSeconds} onChange={onDomainChange} />
+          <DomainScrollbar
+            domain={domain}
+            total={windowTotal}
+            onChange={onDomainChange}
+            title="拖动平移柱状图（两图联动）"
+          />
         </div>
       </div>
     </>
@@ -747,10 +951,12 @@ function DomainScrollbar({
   domain,
   total,
   onChange,
+  title = "拖动平移",
 }: {
   domain: Domain;
   total: number;
-  onChange: (d: Domain) => void;
+  onChange: (d: Domain | null) => void;
+  title?: string;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -802,8 +1008,9 @@ function DomainScrollbar({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      data-no-pan="1"
       className="relative h-3 cursor-pointer rounded-full bg-muted/50 hover:bg-muted/70"
-      title="拖动平移时间轴"
+      title={title}
     >
       <div
         data-thumb="1"
