@@ -16,6 +16,7 @@ model User {
 
   projects  Project[]
   sessions  Session[]
+  feedback  Feedback[]
 }
 
 model Agent {
@@ -426,6 +427,59 @@ model ExperimentEvalComment {
   @@index([experimentId, createdAt])
   @@index([caseId, createdAt])
   @@index([resultId, createdAt])
+}
+
+/// 一次实时异常的持久记录。同一签名反复出现只更新次数，消失后标为已恢复。
+model AlertEvent {
+  id         String    @id @default(cuid())
+  type       String
+  severity   String
+  /// error / agent_error:{names} / token / activity_drop
+  signature  String    @unique
+  message    String    @default("")
+  /// open | resolved
+  status     String    @default("open")
+  hitCount   Int       @default(1)
+  detailJson String    @default("[]")
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  resolvedAt  DateTime?
+
+  @@index([status, lastSeenAt])
+}
+
+/// 新打开的告警要推到哪里。地址是一个接收 JSON 的 webhook。
+model AlertRule {
+  id          String    @id @default(cuid())
+  name        String
+  enabled     Boolean   @default(true)
+  /// warning = 警告和严重都推；critical = 只推严重
+  minSeverity String    @default("warning")
+  /// JSON 数组。空数组表示全部类型。
+  typesJson   String    @default("[]")
+  target      String    @default("")
+  lastSentAt  DateTime?
+  lastError   String    @default("")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+/// 点赞、点踩、问题上报。采集端和会话页都写到这里。
+model Feedback {
+  id        String   @id @default(cuid())
+  userId    String
+  sessionId String   @default("")
+  agentId   String   @default("")
+  /// up | down | report
+  kind      String
+  body      String   @default("")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([kind, createdAt])
+  @@index([sessionId])
 }
 
 model UserSettings {

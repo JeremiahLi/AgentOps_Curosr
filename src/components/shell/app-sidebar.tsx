@@ -19,6 +19,7 @@ import {
   Search,
   Cpu,
   Wrench,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./theme-toggle";
@@ -38,6 +39,13 @@ const navGroups = [
         icon: Wrench,
         matchPrefixes: ["/skills"],
         keywords: ["工具", "skill", "技能", "tool", "调用", "失败"],
+      },
+      {
+        label: "业务指标",
+        href: "/biz-metrics",
+        icon: BarChart3,
+        matchPrefixes: ["/biz-metrics"],
+        keywords: ["业务", "任务", "上报", "指标"],
       },
     ],
   },

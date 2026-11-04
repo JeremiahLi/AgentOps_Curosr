@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
 import { formatNumber, formatTokens, formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -121,19 +122,65 @@ function cellColor(n: number, max: number): string {
   return `color-mix(in oklab, var(--primary) ${pct}%, var(--card))`;
 }
 
+interface FeedbackView {
+  total: number;
+  up: number;
+  down: number;
+  reports: number;
+  responseRate: number;
+  rank: { name: string; count: number }[];
+  recent: { id: string; userName: string; kind: string; body: string; sessionId: string; createdAt: string }[];
+}
+
+const KIND_LABEL: Record<string, string> = { up: "有用", down: "无用", report: "上报" };
+
 export default function UserBoardPage() {
   const [range, setRange] = useState<BoardRange>("weekly");
   const [data, setData] = useState<BoardData | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackView | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState("");
+
+  function load(nextRange: BoardRange, silent = false) {
+    if (!silent) setLoading(true);
+    return Promise.all([
+      fetch(`/api/dashboard/users/board?range=${nextRange}`).then((r) => r.json()),
+      fetch(`/api/feedback?range=${nextRange}`).then((r) => (r.ok ? r.json() : null)),
+    ])
+      .then(([board, fb]: [BoardData, FeedbackView | null]) => {
+        setData(board);
+        setFeedback(fb);
+      })
+      .catch(() => setData(null))
+      .finally(() => {
+        if (!silent) setLoading(false);
+      });
+  }
 
   useEffect(() => {
-    setLoading(true);
-    fetch(`/api/dashboard/users/board?range=${range}`)
-      .then((r) => r.json())
-      .then((d: BoardData) => setData(d))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
+    load(range);
   }, [range]);
+
+  async function submitFeedback(form: FormData) {
+    setNotice("");
+    const response = await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        user: String(form.get("user") || ""),
+        kind: String(form.get("kind") || "report"),
+        body: String(form.get("body") || ""),
+        sessionId: String(form.get("sessionId") || ""),
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setNotice(body.error || "没有记上");
+      return;
+    }
+    setNotice("已记下。");
+    load(range, true);
+  }
 
   if (loading || !data) {
     return (
@@ -479,16 +526,68 @@ export default function UserBoardPage() {
         </CardContent>
       </Card>
 
-      {/* 反馈维度：数据源缺失，如实标注，不做假数据 */}
-      <div className="rounded-lg border border-dashed border-border px-4 py-3">
-        <p className="text-[12px] text-muted-foreground">
-          <span className="font-medium text-foreground">用户反馈尚未接入。</span>
-          当前库中无 feedback 表，评测中心的 <code className="rounded-sm bg-muted px-1 py-0.5 text-[11px]">Experiment.userId</code>
-          统一写入 <code className="rounded-sm bg-muted px-1 py-0.5 text-[11px]">default</code>，无法归属到人。
-          因此本页暂不含「反馈数 / 响应率 / 反馈提出人排行」；接入采集事件（点赞、点踩、问题上报）后补齐，
-          才能回答「谁在用、谁在用得深、谁在反馈」这条链路。
-        </p>
-      </div>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base font-medium">反馈</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {!feedback ? (
+            <p className="text-sm text-muted-foreground">反馈没有加载出来。</p>
+          ) : (
+            <>
+              <p className="text-[13px] text-muted-foreground">
+                {feedback.total} 条（有用 {feedback.up} · 无用 {feedback.down} · 上报 {feedback.reports}）
+                · 响应率 {Math.round(feedback.responseRate)}%
+              </p>
+              {feedback.rank.length > 0 ? (
+                <ul className="space-y-1 text-[13px]">
+                  {feedback.rank.slice(0, 8).map((item) => (
+                    <li key={item.name} className="flex justify-between">
+                      <span>{item.name}</span>
+                      <span className="text-muted-foreground">{item.count} 条</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">这个时间段还没有反馈。会话页可以点有用、无用或上报，也可以在下面补记。</p>
+              )}
+            </>
+          )}
+          <form
+            className="flex flex-col gap-2 border-t border-border/60 pt-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitFeedback(new FormData(event.currentTarget));
+              event.currentTarget.reset();
+            }}
+          >
+            <div className="flex flex-wrap gap-2">
+              <input name="user" required placeholder="用户名，与采集用户一致" className="h-8 w-56 rounded-md border border-border bg-background px-2 text-[13px]" />
+              <select name="kind" className="h-8 rounded-md border border-border bg-background px-2 text-[13px]" defaultValue="report">
+                <option value="up">有用</option>
+                <option value="down">无用</option>
+                <option value="report">上报问题</option>
+              </select>
+              <input name="sessionId" placeholder="会话 id，可选" className="h-8 w-56 rounded-md border border-border bg-background px-2 font-mono text-[12px]" />
+            </div>
+            <textarea name="body" placeholder="补充说明，可选" className="min-h-14 rounded-md border border-border bg-background px-2 py-1.5 text-[13px]" />
+            {notice ? <p className="text-[12px] text-muted-foreground">{notice}</p> : null}
+            <div>
+              <Button type="submit" size="sm">记下反馈</Button>
+            </div>
+          </form>
+          {feedback && feedback.recent.length > 0 ? (
+            <ul className="space-y-1 text-[12px] text-muted-foreground">
+              {feedback.recent.map((item) => (
+                <li key={item.id}>
+                  {item.userName} · {KIND_LABEL[item.kind] ?? item.kind}
+                  {item.body ? ` · ${item.body}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </CardContent>
+      </Card>
     </div>
   );
 }

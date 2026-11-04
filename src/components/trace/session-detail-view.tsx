@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTranscript } from "./trace-transcript";
 import { SessionFactsBar } from "./session-facts-bar";
+import { SessionFeedback } from "./session-feedback";
 import { OutcomeBadge } from "./shared";
 import { SlidePanel } from "./slide-panel";
 import { SessionTreePanel } from "./session-tree-panel";
@@ -325,6 +326,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             />
             {/* 终态与「过程失败」分开看：过程有失败不代表会话失败 */}
             <OutcomeBadge outcome={detail.outcome ?? ""} status={detail.status} />
+            <SessionFeedback sessionId={detail.id} userId={detail.userId} agentId={detail.agentId} />
             {detail.release && (
               <span
                 className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"

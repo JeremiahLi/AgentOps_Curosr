@@ -1,23 +1,22 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveRange } from "@/lib/engine/stats/range";
 
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const range = searchParams.get("range") || "realtime";
-
-  const now = Date.now();
-  const since = range === "weekly"
-    ? new Date(now - 7 * 24 * 3600 * 1000)
-    : new Date(now - 24 * 3600 * 1000);
+  const range = searchParams.get("range") || "weekly";
+  const { startMs } = resolveRange(range);
+  const since = startMs > 0 ? new Date(startMs) : undefined;
 
   try {
     const records = await prisma.businessMetric.findMany({
-      where: { createdAt: { gte: since } },
+      where: since ? { createdAt: { gte: since } } : {},
       orderBy: { createdAt: "desc" },
     });
 
     const totalTasks = records.length;
+    const successTasks = records.filter((r) => r.success).length;
     const totalTokens = records.reduce((s, r) => s + r.totalTokens, 0);
     const activeAgents = new Set(records.map(r => r.agentId)).size;
 
@@ -58,9 +57,9 @@ export async function GET(request: Request) {
     const dayMap = new Map<string, { tokens: number; tasks: number }>();
     for (const r of records) {
       const d = new Date(r.createdAt);
-      const key = range === "weekly"
-        ? `${d.getMonth() + 1}/${d.getDate()}`
-        : `${String(d.getHours()).padStart(2, "0")}:00`;
+      const key = range === "realtime"
+        ? `${String(d.getHours()).padStart(2, "0")}:00`
+        : `${d.getMonth() + 1}/${d.getDate()}`;
       const existing = dayMap.get(key);
       if (existing) {
         existing.tokens += r.totalTokens;
@@ -69,11 +68,13 @@ export async function GET(request: Request) {
         dayMap.set(key, { tokens: r.totalTokens, tasks: 1 });
       }
     }
-    const trend = Array.from(dayMap.entries()).map(([date, data]) => ({
-      date,
-      tokens: data.tokens,
-      tasks: data.tasks,
-    }));
+    const trend = Array.from(dayMap.entries())
+      .map(([date, data]) => ({
+        date,
+        tokens: data.tokens,
+        tasks: data.tasks,
+      }))
+      .reverse();
 
     const tasks = records.slice(0, 100).map(r => ({
       id: r.id,
@@ -92,7 +93,13 @@ export async function GET(request: Request) {
     }));
 
     return NextResponse.json({
-      overview: { totalTasks, totalTokens, activeAgents },
+      overview: {
+        totalTasks,
+        successTasks,
+        successRate: totalTasks > 0 ? (successTasks / totalTasks) * 100 : 0,
+        totalTokens,
+        activeAgents,
+      },
       rankings: rankingsWithInfo,
       trend,
       tasks,

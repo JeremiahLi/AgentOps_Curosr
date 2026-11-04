@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { isAgentAnomalous } from "@/lib/engine/stats/anomalies";
+import { recordAlerts } from "@/lib/engine/stats/record-alerts";
 
 
 export async function GET(request: Request) {
@@ -179,6 +180,14 @@ export async function GET(request: Request) {
           label: `${String(h).padStart(2, "0")}:00`,
           tokens,
         });
+      }
+    }
+
+    if (range === "realtime") {
+      try {
+        await recordAlerts(prisma, anomalies);
+      } catch (err) {
+        console.error("[stats] alert record failed", err);
       }
     }
 
