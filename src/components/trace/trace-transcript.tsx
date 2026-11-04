@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { formatDuration, formatTokens } from "@/lib/format";
 import { isFailed, kindLabel, spanColor, type TraceSpan } from "./trace-helpers";
@@ -12,8 +13,26 @@ interface Props {
 
 /** Transcript 视图：按时间顺序展示每个 Span 的内容卡片 */
 export function TraceTranscript({ spans, selectedId, onSelect }: Props) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+
+  // 从 Timeline / 左树带着选中项打开时，直接滚到对应卡片。
+  // 卡片已经完整落在视口里时不动，避免点卡片本身把列表拽来拽去。
+  useEffect(() => {
+    if (!selectedId || !scrollerRef.current) return;
+    const root = scrollerRef.current;
+    const el = root.querySelector(`[data-span-id="${CSS.escape(selectedId)}"]`);
+    if (!(el instanceof HTMLElement)) return;
+    const rootRect = root.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const fullyVisible = elRect.top >= rootRect.top && elRect.bottom <= rootRect.bottom;
+    if (fullyVisible) return;
+    // 卡片比视口还高时贴顶，保证标题露出来；否则居中
+    const block = elRect.height > rootRect.height * 0.85 ? "start" : "center";
+    el.scrollIntoView({ block });
+  }, [selectedId]);
+
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-thin p-5">
+    <div ref={scrollerRef} className="flex-1 overflow-y-auto scrollbar-thin p-5">
       <div className="mx-auto max-w-3xl space-y-3 pb-4">
         {spans.map((s) => (
           <TranscriptCard key={s.id} span={s} selected={selectedId === s.id} onSelect={onSelect} />
@@ -87,9 +106,10 @@ function TranscriptCard({
 
   return (
     <div
+      data-span-id={span.id}
       onClick={() => onSelect(span.id)}
       className={cn(
-        "cursor-pointer rounded-lg border p-3.5 transition",
+        "cursor-pointer scroll-mt-3 rounded-lg border p-3.5 transition",
         selected
           ? "border-[var(--trace-llm)] bg-[var(--trace-llm)]/10"
           : "border-border hover:border-muted-foreground/40",
