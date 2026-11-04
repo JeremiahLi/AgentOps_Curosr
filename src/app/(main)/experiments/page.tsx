@@ -40,7 +40,7 @@ export default function ExperimentsPage() {
 
   if (loading) {
     return (
-      <div className="flex h-[calc(100vh-56px)] items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground">加载中...</p>
       </div>
     );

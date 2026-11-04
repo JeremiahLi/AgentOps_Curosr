@@ -69,7 +69,7 @@ export default function SkillToolBoardPage() {
 
   if (!data) {
     return (
-      <div className="flex h-[calc(100vh-56px)] items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground">
           {loading ? "加载中..." : failed ? "加载失败，请刷新重试" : "暂无数据"}
         </p>

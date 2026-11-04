@@ -87,7 +87,7 @@ export default function UserDrilldownPage() {
 
   if (loading) {
     return (
-      <div className="flex h-[calc(100vh-56px)] items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground">加载中...</p>
       </div>
     );
@@ -95,7 +95,7 @@ export default function UserDrilldownPage() {
 
   if (notFound || !data) {
     return (
-      <div className="flex h-[calc(100vh-56px)] flex-col items-center justify-center gap-3">
+      <div className="flex h-full flex-col items-center justify-center gap-3">
         <p className="text-sm text-muted-foreground">用户未找到: {userName}</p>
         <Button variant="outline" size="sm" onClick={() => router.push("/user-stats")}>
           返回用户看板

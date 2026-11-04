@@ -112,7 +112,7 @@ export default function AgentDetailPage() {
 
   if (notFound) {
     return (
-      <div className="flex h-[calc(100vh-56px)] flex-col items-center justify-center gap-3">
+      <div className="flex h-full flex-col items-center justify-center gap-3">
         <p className="text-sm text-muted-foreground">未找到 Agent：{agentName}</p>
         <Button variant="outline" size="sm" onClick={() => router.push("/agent-board")}>
           返回 Agent 看板
@@ -123,7 +123,7 @@ export default function AgentDetailPage() {
 
   if (!data) {
     return (
-      <div className="flex h-[calc(100vh-56px)] items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground">{loading ? "加载中..." : "加载失败"}</p>
       </div>
     );

@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTranscript } from "./trace-transcript";
 import { SessionFactsBar } from "./session-facts-bar";
-import { useBindProcessAnomaly } from "@/components/shell/process-anomaly";
 import { SessionFeedback } from "./session-feedback";
 import { OutcomeBadge } from "./shared";
 import { SlidePanel } from "./slide-panel";
@@ -251,7 +250,6 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
   );
   const hasProcessAnomaly = Boolean(detail?.diagnosis?.anomalous || detail?.facts?.hasAnomaly);
   const toggleAnomaly = useCallback(() => setAnomalyOpen((open) => !open), []);
-  useBindProcessAnomaly(Boolean(detail) && anomalyOpen, Boolean(detail) && hasProcessAnomaly, toggleAnomaly);
 
   // 跨区域同步标记：点击柱体 → 树/甘特高亮对应 LLM；点击树/甘特中的 LLM → 两图柱体高亮
   const highlightCallId = useMemo(() => {
@@ -375,7 +373,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
 
   if (loading) {
     return (
-      <div className="flex h-[calc(100vh-56px)] items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground">加载中...</p>
       </div>
     );
@@ -383,7 +381,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
 
   if (notFound || errorMsg || !detail) {
     return (
-      <div className="flex h-[calc(100vh-56px)] flex-col items-center justify-center gap-3">
+      <div className="flex h-full flex-col items-center justify-center gap-3">
         <p className="text-sm text-muted-foreground">
           {notFound ? `Session 未找到：${sessionId}` : `加载失败：${errorMsg ?? "未知错误"}`}
         </p>
@@ -405,7 +403,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
   }
 
   return (
-    <div className="flex h-[calc(100vh-56px)] flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header：统计条（窄屏换行，不再固定单行） */}
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-5 gap-y-1.5 border-b border-border bg-card px-5 py-2">
         {/* min-w-0 + flex-1：标题过长时截断，而不是把右侧整组挤到第二行 */}
@@ -541,7 +539,18 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <StatusBadge status={detail.status} />
+          <StatusBadge
+            status={detail.status}
+            expanded={anomalyOpen}
+            onToggle={toggleAnomaly}
+            title={
+              anomalyOpen
+                ? "收起异常明细"
+                : hasProcessAnomaly || detail.status === "error"
+                  ? "查看具体异常"
+                  : "查看过程诊断"
+            }
+          />
           <div className="mr-1 flex items-center gap-1 rounded-lg bg-muted/50 p-1">
             <Button
               variant={view === "timeline" ? "default" : "ghost"}
@@ -828,19 +837,40 @@ function StatChip({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({
+  status,
+  expanded,
+  onToggle,
+  title,
+}: {
+  status: string;
+  expanded?: boolean;
+  onToggle?: () => void;
+  title?: string;
+}) {
   const text = status === "active" ? "Active" : status === "error" ? "Error" : "Completed";
+  const className = cn(
+    "rounded-full border px-2.5 py-1 text-xs font-medium",
+    status === "error"
+      ? "border-destructive/40 bg-destructive/10 text-destructive"
+      : "border-[var(--trace-tool)]/40 bg-[var(--trace-tool)]/10 text-[var(--trace-tool)]",
+    onToggle && "cursor-pointer transition-colors hover:brightness-110",
+    expanded && "ring-2 ring-destructive/30",
+  );
+  if (!onToggle) {
+    return <span className={className}>{text}</span>;
+  }
   return (
-    <span
-      className={cn(
-        "rounded-full border px-2.5 py-1 text-xs font-medium",
-        status === "error"
-          ? "border-destructive/40 bg-destructive/10 text-destructive"
-          : "border-[var(--trace-tool)]/40 bg-[var(--trace-tool)]/10 text-[var(--trace-tool)]",
-      )}
+    <button
+      type="button"
+      className={className}
+      aria-expanded={expanded}
+      aria-controls="process-anomaly-panel"
+      title={title}
+      onClick={onToggle}
     >
       {text}
-    </span>
+    </button>
   );
 }
 

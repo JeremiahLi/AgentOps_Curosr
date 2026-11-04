@@ -219,8 +219,12 @@ export function AppSidebar() {
         )}
       </nav>
 
-      {/* 底部用户卡片 */}
-      <div className="relative p-3">
+      {/* 底部：系统状态收在用户卡片上方，不再单独占一整行顶栏 */}
+      <div className="relative space-y-2 p-3">
+        <div className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
+          <span>系统正常</span>
+        </div>
         <div className="flex items-center gap-2.5 rounded-xl border border-sidebar-border/60 bg-card/80 px-2.5 py-2 shadow-sm dark:bg-white/[0.04] dark:shadow-none">
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-medium text-primary-foreground">
             Pi
