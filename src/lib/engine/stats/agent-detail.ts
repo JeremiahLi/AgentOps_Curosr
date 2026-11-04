@@ -6,6 +6,13 @@ import { getAgentBoard, type AgentBoardRow } from "./agent-board";
 import { SQL_BAD, SQL_FINISHED, SQL_PARTIAL } from "./session-outcome";
 import { buildBucketKeys, bucketLabel, type TrendGranularity } from "./trend";
 import { explainRecordedIssue, isMissingErrorSignature, type RecordedSpan } from "../ingest/issue-note";
+import { toolNameOf } from "../ingest/issue-rules";
+import {
+  buildToolSceneIssues,
+  describeFailureCluster,
+  type IssueReport,
+  type IssueSample,
+} from "../ingest/issue-cause";
 import { loadSlowCallReport, type SlowSpanView } from "./slow-call";
 
 /**
@@ -26,6 +33,7 @@ const DECLINE_RATIO = 0.5;
 export type IssueSeverity = "critical" | "warning" | "info";
 export type IssueKind =
   | "tool_failure"
+  | "tool_scene"
   | "error_cluster"
   | "slow_span"
   | "decline"
@@ -46,6 +54,8 @@ export interface AgentIssue {
   suggestion: string;
   /** 深链，指向 /trace/{sessionId}?spanId={spanId}（无 spanId 时落到会话顶部） */
   links: { sessionId: string; label: string; spanId?: string }[];
+  /** 下载用的原因分布和样例原文。页面上的结论由它生成。 */
+  report?: IssueReport;
 }
 
 export interface AgentTopItem {
@@ -190,6 +200,7 @@ export async function getAgentDetail(
     spanAggRows,
     lifeRows,
     topToolRows,
+    toolStatRows,
     failedSpanRows,
     spanP95Rows,
     topUserRows,
@@ -245,10 +256,29 @@ export async function getAgentDetail(
       ORDER BY calls DESC
       LIMIT 10
     `,
+    // 工具失败按工具名汇总，给问题列表用。不截断 Top 10，否则低频但高失败率的工具会被丢掉。
+    prisma.$queryRaw<Record<string, unknown>[]>`
+      SELECT sp.name AS name,
+             COUNT(*) AS calls,
+             COALESCE(SUM(CASE WHEN sp.status IN ('failed', 'error') THEN 1 ELSE 0 END), 0) AS failed,
+             CAST(COALESCE(AVG(CASE WHEN sp.status IN ('failed', 'error') THEN NULLIF(sp.duration, 0) END), 0) AS INTEGER) AS avgFailDuration
+      FROM Span sp
+      JOIN Session s ON sp.sessionId = s.id
+      WHERE s.agentId = ${agentId} AND s.startTime >= ${startMs}
+        AND sp.kind IN ('tool_call', 'command')
+      GROUP BY sp.name
+    `,
     // D4 失败 span 明细（供错误聚类 + 工具取证）
     prisma.$queryRaw<Record<string, unknown>[]>`
       SELECT sp.id AS id, sp.sessionId AS sessionId, sp.kind AS kind, sp.name AS name,
-             sp.error AS error, sp.duration AS duration, sp.createdAt AS createdAt
+             CASE
+               WHEN length(COALESCE(sp.error, '')) <= 1200 THEN COALESCE(sp.error, '')
+               ELSE substr(sp.error, 1, 500) || char(10) || '…' || char(10) || substr(sp.error, -700)
+             END AS error,
+             substr(COALESCE(sp.input, ''), 1, 800) AS input,
+             COALESCE(sp.model, '') AS model,
+             sp.duration AS duration, sp.inputTokens AS inputTokens, sp.outputTokens AS outputTokens,
+             sp.createdAt AS createdAt
       FROM Span sp
       JOIN Session s ON sp.sessionId = s.id
       WHERE s.agentId = ${agentId} AND s.startTime >= ${startMs} AND sp.status IN ('failed', 'error')
@@ -406,7 +436,12 @@ export async function getAgentDetail(
       sessionId: String(r.sessionId),
       kind: String(r.kind),
       name: String(r.name || ""),
-      error: String(raw.error ?? ""),
+      error: String(raw.error ?? r.error ?? ""),
+      input: String(raw.input ?? r.input ?? ""),
+      model: String(r.model || ""),
+      duration: Number(r.duration) || 0,
+      inputTokens: Number(r.inputTokens) || 0,
+      outputTokens: Number(r.outputTokens) || 0,
       at: num(raw.createdAt),
     };
   });
@@ -467,7 +502,8 @@ export async function getAgentDetail(
   /* ---- 问题列表 ---- */
   const issues: AgentIssue[] = [];
 
-  // 工具失败和错误聚类读问题库里已打开的记录。慢调用、衰退、沉默、数据质量仍按当前时间窗现算。
+  // 工具失败按当前时间窗、按工具名汇总。模型/回答失败读问题库，并用样例把「模型调用失败」拆开。
+  // 慢调用、衰退、沉默、数据质量仍按当前时间窗现算。
   const storedIssues = await prisma.issue.findMany({
     where: { agentId, status: { in: ["open", "confirmed", "fixed"] } },
     orderBy: { lastSeenAt: "desc" },
@@ -483,12 +519,16 @@ export async function getAgentDetail(
         SELECT sp.id AS id, sp.kind AS kind, sp.name AS name, COALESCE(sp.model, '') AS model,
                sp.duration AS duration, sp.inputTokens AS inputTokens, sp.outputTokens AS outputTokens,
                length(COALESCE(sp.output, '')) AS outputChars,
-               substr(COALESCE(sp.error, ''), 1, 180) AS error
+               substr(COALESCE(sp.input, ''), 1, 800) AS input,
+               CASE
+                 WHEN length(COALESCE(sp.error, '')) <= 1200 THEN COALESCE(sp.error, '')
+                 ELSE substr(sp.error, 1, 500) || char(10) || '…' || char(10) || substr(sp.error, -700)
+               END AS error
         FROM Span sp
         WHERE sp.id IN (${Prisma.join(evidenceSpanIds)})
       `
     : [];
-  const recordedById = new Map<string, Omit<RecordedSpan, "sessionId">>();
+  const recordedById = new Map<string, Omit<RecordedSpan, "sessionId"> & { input: string }>();
   for (const raw of recordedRows) {
     const row = normalizeRow(raw);
     recordedById.set(String(row.id), {
@@ -501,38 +541,67 @@ export async function getAgentDetail(
       outputTokens: Number(row.outputTokens) || 0,
       outputChars: Number(row.outputChars) || 0,
       error: String(raw.error ?? row.error ?? ""),
+      input: String(raw.input ?? row.input ?? ""),
     });
   }
+
+  // 工具按当前时间窗汇总。问题库把同一工具拆成很多错误签名，单条往往到不了打开阈值，列表里就会只剩「模型调用失败」。
+  const toolStats = toolStatRows.map((raw) => {
+    const row = normalizeRow(raw);
+    return {
+      name: String(row.name || "(未命名)"),
+      calls: Number(row.calls) || 0,
+      failed: Number(row.failed) || 0,
+      avgFailDuration: Number(row.avgFailDuration) || 0,
+    };
+  });
+  const toolScenes = buildToolSceneIssues(failedSpansList, toolStats);
+  const coveredTools = new Set(toolScenes.map((scene) => scene.id));
+  for (const scene of toolScenes) {
+    issues.push(scene);
+  }
+
   for (const issue of storedIssues) {
+    const toolName = toolNameOf(issue.signature);
+    if (issue.kind === "tool_failure" && toolName && coveredTools.has(`tool-scene:${toolName}`)) continue;
+    if (issue.hitCount <= 0) continue;
     const severity = issue.severity === "critical" || issue.severity === "info" ? issue.severity : "warning";
     const kind = issue.kind === "tool_failure" ? "tool_failure" : "error_cluster";
-    const facts: RecordedSpan[] = issue.evidence.flatMap((item) => {
+    const samples: IssueSample[] = issue.evidence.flatMap((item) => {
       const span = recordedById.get(item.spanId);
       return span ? [{ ...span, sessionId: item.sessionId }] : [];
     });
+    const facts: RecordedSpan[] = samples;
     const explained = explainRecordedIssue(facts);
+    const brief = describeFailureCluster(samples, {
+      title: issue.title,
+      signature: issue.signature,
+      hitCount: issue.hitCount,
+    });
     const missing = isMissingErrorSignature(issue.signature);
     issues.push({
       id: issue.id,
       severity,
       kind,
-      title: issue.title,
-      conclusion: explained?.conclusion || "",
-      evidence: [
+      title: brief?.title || issue.title,
+      conclusion: brief?.conclusion || explained?.conclusion || "",
+      evidence: brief?.evidence || [
         `累计命中 ${issue.hitCount} 次`,
         issue.sampleError ? `样例：${issue.sampleError.slice(0, 160)}` : "没有留下错误原文",
       ],
       suggestion:
-        missing && explained
+        brief?.suggestion ||
+        (missing && explained
           ? explained.action
           : issue.status === "confirmed"
             ? "已确认。同样的新失败会继续追加证据。"
-            : "在问题库里确认或忽略。忽略后，同样的新会话不会把它重新打开。",
+            : "在问题库里确认或忽略。忽略后，同样的新会话不会把它重新打开。"),
       links: issue.evidence.slice(0, 3).map((item, index) => ({
         sessionId: item.sessionId,
         spanId: item.spanId || undefined,
         label: `证据 ${index + 1}`,
       })),
+      report: brief?.report,
     });
   }
 
@@ -571,7 +640,10 @@ export async function getAgentDetail(
   // 6) 数据质量。已经有「无错误文本」聚类时，结论写在那一条上，这里不再重复一条空泛提示。
   const answerFailed = boardRow?.answerFailed ?? 0;
   const failureExplained = issues.some(
-    (item) => item.kind === "error_cluster" && Boolean(item.conclusion) && item.title.includes("无错误文本"),
+    (item) =>
+      item.kind === "error_cluster" &&
+      Boolean(item.conclusion) &&
+      (item.title.includes("无错误文本") || item.title.includes("模型调用失败")),
   );
   if (answerFailed > 0 && !failureExplained) {
     issues.push({

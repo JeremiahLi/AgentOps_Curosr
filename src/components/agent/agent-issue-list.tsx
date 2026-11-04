@@ -31,6 +31,7 @@ const SEVERITY_META: Record<IssueSeverity, { label: string; bar: string; text: s
 
 const KIND_LABEL: Record<string, string> = {
   tool_failure: "工具失败",
+  tool_scene: "工具失败",
   error_cluster: "重复错误",
   slow_span: "慢调用",
   decline: "使用衰退",

@@ -61,7 +61,10 @@ const AUTH_RE = /401|invalid api key|unauthorized|authentication|鉴权失败/i;
 const OVERLOAD_RE = /\b503\b|\b529\b|overloaded|server overloaded|服务过载/i;
 const FILTER_RE = /content filter|content_policy|safety|审核未通过/i;
 const PERMISSION_RE = /permission denied|\beacces\b|\beperm\b/i;
-const NOT_FOUND_RE = /enoent|no such file|\bnot found\b|couldn't find|could not find/i;
+const NOT_FOUND_RE = /enoent|no such file|\bnot found\b/i;
+const EXACT_TEXT_RE = /exact text|must match exactly/i;
+const NOT_UNIQUE_RE = /must be unique/i;
+const NO_CHANGE_RE = /no changes made/i;
 const DIR_RE = /eisdir|illegal operation on a directory/i;
 const INVOCATION_RE = /unexpected eof|syntax error|looking for matching/i;
 const VALIDATION_RE = /validation error|failed\s*-\s*found|质检未通过|must match exactly|must be unique/i;
@@ -93,7 +96,7 @@ export function isGenericModelError(error: string): boolean {
 function exceptionOf(text: string): { type: string; message: string } | null {
   const matches = [...text.matchAll(EXCEPTION_RE)];
   if (matches.length === 0) {
-    if (/traceback/i.test(text)) return { type: "Exception", message: "" };
+    if (/traceback/i.test(text)) return { type: "", message: "Traceback" };
     return null;
   }
   const last = matches[matches.length - 1];
@@ -106,9 +109,12 @@ function isToolKind(kind: string): boolean {
 }
 
 /** 从工具入参里抽出脚本名、路径或命令开头，用来看失败集中在哪一次调用。 */
-export function invocationTarget(input: string): string {
+export function invocationTarget(input: string, error = ""): string {
   const trimmed = input.trim();
-  if (!trimmed || trimmed === "{}" || trimmed === "null") return "";
+  if (!trimmed || trimmed === "{}" || trimmed === "null") {
+    const named = error.match(/[\w./\\:-]+\.(?:py|json|ts|tsx|js|md|yaml|yml)\b/);
+    return named ? named[0].split(/[/\\]/).pop() || named[0] : "";
+  }
   let raw = trimmed;
   try {
     const obj = JSON.parse(trimmed) as Record<string, unknown>;
@@ -125,9 +131,12 @@ export function invocationTarget(input: string): string {
     raw = trimmed;
   }
   const python = raw.match(/\bpython(?:3)?(?:\.exe)?\s+(?:-\S+\s+)*["']?([^\s"']+\.py)/i);
-  if (python) return python[1].split(/[/\\]/).pop() || python[1];
-  const file = raw.match(/[^\s"']+\.(?:py|json|ts|tsx|js|md|yaml|yml)\b/);
+  if (python && !/\s-c\b/.test(raw)) return python[1].split(/[/\\]/).pop() || python[1];
+  const file = raw.match(/[\w./\\-]+\.(?:py|json|ts|tsx|js|md|yaml|yml)\b/);
   if (file) return file[0].split(/[/\\]/).pop() || file[0];
+  const fromError = error.match(/[\w./\\:-]+\.(?:py|json|ts|tsx|js|md|yaml|yml)\b/);
+  if (fromError) return fromError[0].split(/[/\\]/).pop() || fromError[0];
+  if (raw.startsWith("{") || raw.startsWith("[")) return "";
   const head = raw.split(/\s+/).slice(0, 2).join(" ");
   return clip(head, 48);
 }
@@ -211,6 +220,43 @@ export function classifyFailure(sample: IssueSample): FailureClass {
       suggestion: "核对路径和运行身份的写权限。这是工具被拒绝，不是模型调用失败。",
     };
   }
+  if (NO_CHANGE_RE.test(error)) {
+    return {
+      label: "没有改到内容",
+      detail: "no_change",
+      proof: `工具报告没有改动：${clip(error, 80)}`,
+      suggestion: "oldText 和文件里的现状不一致，或这段文本已经不在了。对一下原文再改，不要原样重试。",
+    };
+  }
+  if (NOT_UNIQUE_RE.test(error)) {
+    return {
+      label: "替换文本不唯一",
+      detail: "not_unique",
+      proof: `同一段 oldText 命中了多处：${clip(error, 80)}`,
+      suggestion: "给 oldText 补上前后文，让它只命中一处。",
+    };
+  }
+  if (/pydantic|union_tag_not_found|validation error for/i.test(sample.error)) {
+    const tag = sample.error.match(/\/v\/([a-z0-9_]+)/i)?.[1] || "";
+    return {
+      label: "校验未通过",
+      detail: tag,
+      proof: tag ? `校验没过：${tag}` : clip(error, 100),
+      suggestion: tag
+        ? `输入没过校验（${tag}）。改被点名的字段，通过之前不要重跑。`
+        : "按校验点名的字段改输入 JSON。这是脚本校验失败，不是模型调用失败。",
+    };
+  }
+  if (EXACT_TEXT_RE.test(error) || VALIDATION_RE.test(error)) {
+    return {
+      label: EXACT_TEXT_RE.test(error) ? "找不到要替换的原文" : "校验未通过",
+      detail: EXACT_TEXT_RE.test(error) ? "exact_text" : "validation",
+      proof: clip(error, 100),
+      suggestion: EXACT_TEXT_RE.test(error)
+        ? "改 oldText，让它和文件里的原文一致，包括空格和换行。不要重试同一段。"
+        : "改被点名的文件或字段。通过之前不要再跑同一条校验。",
+    };
+  }
   if (NOT_FOUND_RE.test(error)) {
     return {
       label: "找不到目标",
@@ -235,15 +281,6 @@ export function classifyFailure(sample: IssueSample): FailureClass {
       suggestion: "改这条命令的引号和换行。同一条不要原样再跑。",
     };
   }
-  if (VALIDATION_RE.test(error)) {
-    return {
-      label: "校验未通过",
-      detail: "validation",
-      proof: `校验没过：${clip(error, 80)}`,
-      suggestion: "改被点名的文件或字段。通过之前不要再跑同一条校验。",
-    };
-  }
-
   const exception = exceptionOf(sample.error);
   if (exception) {
     const syntax = /syntax|indent|taberror|compile/i.test(exception.type);
@@ -251,10 +288,12 @@ export function classifyFailure(sample: IssueSample): FailureClass {
     return {
       label: syntax ? "编译/语法错误" : "运行时异常",
       detail: exception.type,
-      proof: `抛出 ${exception.type}${message}`,
-      suggestion: syntax
-        ? `按 ${exception.type} 改脚本，不要重跑整段命令。`
-        : `按 ${exception.type} 查对应文件和行。这是脚本异常，不是模型额度或断连。`,
+      proof: exception.type ? `抛出 ${exception.type}${message}` : "有 Traceback，截到的文本里没有异常类型。",
+      suggestion: exception.type
+        ? syntax
+          ? `按 ${exception.type} 改脚本，不要重跑整段命令。`
+          : `按 ${exception.type} 查对应文件和行。这是脚本异常，不是模型额度或断连。`
+        : "看 Traceback 最后一行的异常类型，按那个类型改脚本。",
     };
   }
 
@@ -314,34 +353,73 @@ export function classifyFailure(sample: IssueSample): FailureClass {
   }
   return {
     label: "其他错误",
-    detail: clip(error, 40),
+    detail: "",
     proof: clip(error, 120),
-    suggestion: "按这段 error 原文处理，不要再概括成「调用失败」。",
+    suggestion: `按这段原文处理：${clip(error, 80)}`,
   };
 }
 
-function countLabels(items: FailureClass[]): { label: string; count: number; detail: string }[] {
-  const buckets = new Map<string, { count: number; details: Map<string, number>; proof: string; suggestion: string }>();
+const HIDDEN_DETAIL = new Set([
+  "empty",
+  "no status",
+  "exact_text",
+  "no_change",
+  "not_found",
+  "validation",
+  "permission",
+  "timeout",
+  "context",
+  "filter",
+  "wrapper",
+  "prose",
+  "missing",
+  "not_unique",
+  "invocation",
+  "directory",
+]);
+
+function visibleDetail(detail: string): boolean {
+  if (!detail || HIDDEN_DETAIL.has(detail)) return false;
+  return /Error|Exception|^exit |^[a-z][a-z0-9_]{2,}$/.test(detail);
+}
+
+function countLabels(
+  items: FailureClass[],
+): { name: string; label: string; count: number; proof: string; suggestion: string }[] {
+  const buckets = new Map<
+    string,
+    { count: number; details: Map<string, { count: number; proof: string; suggestion: string }>; proof: string; suggestion: string }
+  >();
   for (const item of items) {
     const bucket = buckets.get(item.label) ?? {
       count: 0,
-      details: new Map<string, number>(),
+      details: new Map(),
       proof: item.proof,
       suggestion: item.suggestion,
     };
     bucket.count += 1;
-    if (item.detail) bucket.details.set(item.detail, (bucket.details.get(item.detail) ?? 0) + 1);
+    if (visibleDetail(item.detail)) {
+      const found = bucket.details.get(item.detail) ?? { count: 0, proof: item.proof, suggestion: item.suggestion };
+      found.count += 1;
+      bucket.details.set(item.detail, found);
+    }
     buckets.set(item.label, bucket);
   }
   return [...buckets.entries()]
     .map(([label, bucket]) => {
-      const details = [...bucket.details.entries()].sort((a, b) => b[1] - a[1]);
+      const details = [...bucket.details.entries()].sort((a, b) => b[1].count - a[1].count);
+      const top = details[0]?.[1];
       const detailText = details
-        .filter(([, count]) => count > 0)
         .slice(0, 3)
-        .map(([name, count]) => `${name} ×${count}`)
+        .map(([name, item]) => `${name} ×${item.count}`)
         .join("，");
-      return { label: detailText ? `${label}（${detailText}）` : label, count: bucket.count, detail: bucket.suggestion };
+      return {
+        name: label,
+        label: detailText ? `${label} ×${bucket.count}（${detailText}）` : `${label} ×${bucket.count}`,
+        count: bucket.count,
+        proof: top?.proof || bucket.proof,
+        suggestion: top?.suggestion || bucket.suggestion,
+      };
     })
     .sort((a, b) => b.count - a.count);
 }
@@ -349,7 +427,7 @@ function countLabels(items: FailureClass[]): { label: string; count: number; det
 function countTargets(samples: IssueSample[]): { label: string; count: number }[] {
   const counts = new Map<string, number>();
   for (const sample of samples) {
-    const target = invocationTarget(sample.input) || "未采到入参";
+    const target = invocationTarget(sample.input, sample.error) || "未采到入参";
     counts.set(target, (counts.get(target) ?? 0) + 1);
   }
   const rows = [...counts.entries()]
@@ -393,11 +471,13 @@ export function buildToolSceneIssues(samples: IssueSample[], stats: ToolCallStat
     if (rate < TOOL_FAIL_RATE_THRESHOLD) continue;
     const group = byName.get(name) ?? [];
     const classes = group.map(classifyFailure);
-    const causes = countLabels(classes);
+    const counted = countLabels(classes);
+    const causes = counted.map(({ label, count }) => ({ label, count }));
+    const causeLine = causes.map((item) => item.label).join("，");
     const targets = countTargets(group);
     const topTarget = targets.find((item) => item.label !== "其他" && item.label !== "未采到入参");
     const targetShare = topTarget && group.length > 0 ? topTarget.count / group.length : 0;
-    const topCause = causes[0];
+    const topCause = counted[0];
     const share = toolFailedTotal > 0 ? (stat.failed / toolFailedTotal) * 100 : 0;
     const title = [
       `${name} 失败 ${stat.failed} 次（${rate.toFixed(1)}%）`,
@@ -405,7 +485,6 @@ export function buildToolSceneIssues(samples: IssueSample[], stats: ToolCallStat
     ]
       .filter(Boolean)
       .join("，");
-    const causeLine = causes.map((item) => `${item.label} ×${item.count}`).join("，");
     const targetLine = targets.map((item) => `${item.label} ×${item.count}（${pct(item.count, group.length || 1)}）`).join("，");
     const patterns = topPatterns(group);
     const sampled = group.length < stat.failed;
@@ -413,7 +492,7 @@ export function buildToolSceneIssues(samples: IssueSample[], stats: ToolCallStat
       `这是工具 ${name} 的失败，不是模型调用。`,
       `本区间 ${stat.failed}/${stat.calls} 次失败（${rate.toFixed(1)}%），占工具失败的 ${share.toFixed(0)}%。`,
       topTarget && targetShare >= 0.3 ? `失败集中在 ${topTarget.label}（抽到的 ${group.length} 条里 ${topTarget.count} 条）。` : "",
-      topCause ? `主要是${topCause.label}。` : "抽到的失败 span 里没有足够的 error 可归类。",
+      topCause ? `主要是${topCause.name}。` : "抽到的失败 span 里没有足够的 error 可归类。",
     ]
       .filter(Boolean)
       .join("");
@@ -433,8 +512,8 @@ export function buildToolSceneIssues(samples: IssueSample[], stats: ToolCallStat
       conclusion,
       evidence,
       suggestion: topTarget
-        ? `先看 ${topTarget.label}。${topCause?.detail || "按上面的错误类型改这一处，不要概括成模型调用失败。"}`
-        : topCause?.detail || "先看失败 span 的 error 原文。",
+        ? `先看 ${topTarget.label}。${topCause?.suggestion || "按上面的错误类型改这一处，不要概括成模型调用失败。"}`
+        : topCause?.suggestion || "先看失败 span 的 error 原文。",
       links: shown.slice(0, 3).map((sample, index) => ({
         sessionId: sample.sessionId,
         spanId: sample.spanId,
@@ -492,31 +571,31 @@ export function describeFailureCluster(
     ? mix
       ? `模型调用失败：样例里混有 ${rawCauses
           .slice(0, 3)
-          .map((item) => `${item.label.split("（")[0]} ${item.count}`)
+          .map((item) => `${item.name} ${item.count}`)
           .join("、")}`
-      : `模型调用失败：${top.label.split("（")[0]}（${top.count}/${samples.length} 条样例）`
+      : `模型调用失败：${top.name}（${top.count}/${samples.length} 条样例）`
     : meta.title;
   const noQuota = !causes.some((item) => item.label.startsWith("额度"));
   const conclusion = [
     `问题库累计 ${meta.hitCount} 次，下面是抽到的 ${samples.length} 条。`,
     mix
-      ? `原因不只有一种：${causes.map((item) => `${item.label} ${item.count} 条`).join("，")}。`
-      : `${top.label.split("（")[0]} ${top.count} 条。`,
-    classes[0]?.proof || "",
+      ? `原因不只有一种：${rawCauses.map((item) => `${item.name} ${item.count} 条`).join("，")}。`
+      : `${top.name} ${top.count} 条。`,
+    top.proof,
     noQuota ? "样例 error 里没有 402、quota、余额或 429。" : "",
   ]
     .filter(Boolean)
     .join("");
   const evidence = [
     `累计命中 ${meta.hitCount} 次（问题库，不随页面时间窗重算），样例 ${samples.length} 条`,
-    ...rawCauses.slice(0, 4).map((item) => `${item.label} ×${item.count}`),
+    ...rawCauses.slice(0, 4).map((item) => item.label),
   ];
   const shown = samples.slice(0, SAMPLE_CAP);
   return {
     title,
     conclusion,
     evidence,
-    suggestion: top.detail,
+    suggestion: top.suggestion,
     report: {
       source: `问题库签名 ${meta.signature}，累计 ${meta.hitCount} 次；原因由 ${samples.length} 条证据 span 的 error、耗时和 token 归类`,
       causes,

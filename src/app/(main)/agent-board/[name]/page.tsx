@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, ArrowLeft } from "lucide-react";
+import { AlertCircle, ArrowLeft, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader, SegmentedControl } from "@/components/shell/page-header";
@@ -23,6 +23,7 @@ import {
 import { RANGE_OPTIONS, type StatsRange } from "@/lib/engine/stats/range";
 import type { AgentDetail } from "@/lib/engine/stats/agent-detail";
 import type { AgentGuide } from "@/lib/engine/ingest/issue-guide";
+import { renderIssuesMarkdown } from "@/lib/engine/stats/issue-markdown";
 import { cn } from "@/lib/utils";
 
 /**
@@ -131,6 +132,23 @@ export default function AgentDetailPage() {
   const { totals, profile, trends } = data;
   const okSessions = Math.max(totals.sessions - totals.badSessions, 0);
 
+  function downloadIssues() {
+    const markdown = renderIssuesMarkdown({
+      agentName: profile.name,
+      range: data.range,
+      totals,
+      issues: data.issues,
+      notes: guide?.notes,
+    });
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${profile.name}-issues.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className={cn("flex flex-col gap-5 p-6 transition-opacity", loading && "opacity-60")}>
       <PageHeader
@@ -230,11 +248,17 @@ export default function AgentDetailPage() {
       {/* 问题列表 + 工具榜 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader className="flex-row items-baseline justify-between space-y-0 border-b border-border/60 pb-2.5">
+          <CardHeader className="flex-row items-center justify-between space-y-0 border-b border-border/60 pb-2.5">
             <CardTitle>问题列表</CardTitle>
-            <span className="text-[11px] text-muted-foreground/80">
-              工具失败和重复错误来自问题库 · 其余按当前时间范围
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] text-muted-foreground/80">
+                工具按当前时间窗汇总 · 模型失败写明原因
+              </span>
+              <Button type="button" variant="outline" size="sm" className="h-7 gap-1 px-2 text-[11px]" onClick={downloadIssues}>
+                <Download className="h-3 w-3" />
+                下载
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="pt-3">
             <AgentIssueList issues={data.issues} guide={guide} guideFailed={guideFailed} />
