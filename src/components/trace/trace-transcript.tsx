@@ -32,8 +32,8 @@ export function TraceTranscript({ spans, selectedId, onSelect }: Props) {
   }, [selectedId]);
 
   return (
-    <div ref={scrollerRef} className="flex-1 overflow-y-auto scrollbar-thin p-5">
-      <div className="mx-auto max-w-3xl space-y-3 pb-4">
+    <div ref={scrollerRef} className="flex-1 overflow-y-auto scrollbar-thin px-3 py-4">
+      <div className="space-y-3 pb-4">
         {spans.map((s) => (
           <TranscriptCard key={s.id} span={s} selected={selectedId === s.id} onSelect={onSelect} />
         ))}
@@ -61,7 +61,7 @@ function TranscriptCard({
   if (span.kind === "llm_thinking") {
     body = (
       <>
-        <div className="mb-1 text-[11px] text-muted-foreground">
+        <div className="mb-1.5 text-sm text-muted-foreground">
           Model: {span.model || span.name} ·{" "}
           <span className="text-[var(--trace-llm)]">In {span.tokens ? span.tokens.input : "—"}</span>
           {" / "}
@@ -77,7 +77,7 @@ function TranscriptCard({
   } else if (span.kind === "tool_call" || span.kind === "command" || span.kind === "tool_execution") {
     body = (
       <>
-        <div className="mb-1 text-[11px] text-muted-foreground">
+        <div className="mb-1.5 text-sm text-muted-foreground">
           {span.isSkill ? "Skill" : "Tool"}: {span.name}
           {span.tokens && (
             <span className="ml-2 font-mono">
@@ -87,14 +87,14 @@ function TranscriptCard({
         </div>
         {span.input && <PreBlock text={truncate(span.input, 1200)} maxHeight="max-h-44" />}
         {span.output && <PreBlock text={truncate(span.output, 1200)} maxHeight="max-h-44" />}
-        {failed && span.error && <div className="mt-1.5 text-xs text-destructive">{span.error}</div>}
+        {failed && span.error && <div className="mt-1.5 text-sm text-destructive">{span.error}</div>}
       </>
     );
   } else if (span.kind === "answer") {
     body = span.output ? (
-      <div className="whitespace-pre-wrap text-sm">{truncate(span.output, 2000)}</div>
+      <div className="whitespace-pre-wrap text-base leading-relaxed">{truncate(span.output, 2000)}</div>
     ) : (
-      <div className="text-sm text-muted-foreground">…</div>
+      <div className="text-base text-muted-foreground">…</div>
     );
   } else if (span.kind === "user") {
     body = span.input ? <PreBlock text={truncate(span.input, 1500)} maxHeight="max-h-40" /> : null;
@@ -118,15 +118,15 @@ function TranscriptCard({
     >
       <div className="mb-1.5 flex items-center gap-2">
         <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
-        <span className="text-sm font-medium">{span.name}</span>
-        <span className="rounded-sm bg-muted px-1 py-0.5 font-mono text-[10px] tracking-wide text-muted-foreground">
+        <span className="text-base font-medium">{span.name}</span>
+        <span className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-xs tracking-wide text-muted-foreground">
           {kindLabel(span.kind)}
         </span>
-        <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+        <span className="ml-auto font-mono text-sm text-muted-foreground">
           {formatDuration(span.durationMs)}
         </span>
         {failed && (
-          <span className="text-xs font-medium text-destructive">FAILED</span>
+          <span className="text-sm font-medium text-destructive">FAILED</span>
         )}
       </div>
       {body}
@@ -138,7 +138,7 @@ function PreBlock({ text, maxHeight, muted }: { text: string; maxHeight?: string
   return (
     <pre
       className={cn(
-        "overflow-x-auto rounded bg-muted/40 p-2 font-mono text-[11px] leading-relaxed",
+        "overflow-x-auto rounded bg-muted/40 p-2.5 font-mono text-sm leading-relaxed",
         maxHeight ?? "max-h-44",
         muted && "text-muted-foreground",
       )}

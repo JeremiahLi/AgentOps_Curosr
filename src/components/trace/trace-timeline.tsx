@@ -575,15 +575,41 @@ function TokenCharts({
   const setupCanvas = (canvas: HTMLCanvasElement, cssH: number) => {
     const parent = canvas.parentElement;
     const dpr = window.devicePixelRatio || 1;
-    const cssW = parent?.clientWidth ?? 0;
-    canvas.width = Math.max(cssW, 1) * dpr;
-    canvas.height = cssH * dpr;
+    const cssW = Math.max(Math.round(parent?.clientWidth ?? 0), 1);
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
     canvas.style.width = cssW + "px";
     canvas.style.height = cssH + "px";
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return { ctx, cssW, cssH };
+    return { ctx, cssW, cssH, dpr };
+  };
+
+  /** 对齐到物理像素，避免 9px 小字落在半像素上发虚 */
+  const snap = (v: number, dpr: number) => Math.round(v * dpr) / dpr;
+
+  const drawCrispLabel = (
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    dpr: number,
+    font: string,
+  ) => {
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const sx = snap(x, dpr);
+    const sy = snap(y, dpr);
+    const width = ctx.measureText(text).width;
+    const height = 16;
+    ctx.fillStyle = cssVar("--background", "#0d1117");
+    ctx.fillRect(sx - width / 2 - 3, sy - height / 2, width + 6, height);
+    ctx.fillStyle = cssVar("--foreground", "#e6edf3");
+    ctx.fillText(text, sx, sy);
+    ctx.restore();
   };
 
   const fmtAxis = (v: number): string => {
@@ -608,7 +634,7 @@ function TokenCharts({
     for (let i = 0; i <= 10; i++) {
       const x = (w / 10) * i;
       ctx.beginPath();
-      ctx.moveTo(x, 0);
+      ctx.moveTo(x, top);
       ctx.lineTo(x, h);
       ctx.stroke();
     }
@@ -678,11 +704,13 @@ function TokenCharts({
           ctx.stroke();
           ctx.setLineDash([]);
         }
-        if (w0 > 44) {
-          ctx.fillStyle = cssVar("--muted-foreground", "#8b949e");
-          ctx.font = "9px ui-monospace, monospace";
+        if (w0 > 56) {
+          ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
           ctx.textAlign = "center";
-          ctx.fillText(`Round ${r.roundIndex + 1}`, x0 + w0 / 2, 9);
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = cssVar("--foreground", "#e6edf3");
+          ctx.fillText(`Round ${r.roundIndex + 1}`, snap(x0 + w0 / 2, window.devicePixelRatio || 1), snap(11, window.devicePixelRatio || 1));
+          ctx.textBaseline = "alphabetic";
         }
       });
       ctx.textAlign = "left";
@@ -694,12 +722,12 @@ function TokenCharts({
   const drawPrompt = useCallback(() => {
     const canvas = lineRef.current;
     if (!canvas || !canvas.parentElement?.clientWidth) return;
-    const setup = setupCanvas(canvas, 140);
+    const setup = setupCanvas(canvas, 156);
     if (!setup) return;
-    const { ctx, cssW, cssH } = setup;
+    const { ctx, cssW, cssH, dpr } = setup;
     const w = cssW;
     const h = cssH;
-    const top = 18;
+    const top = 26;
     const bottom = h - 8;
     const originX = 4;
     const plotW = Math.max(w - 8, 1);
@@ -743,12 +771,16 @@ function TokenCharts({
         ctx.lineWidth = 1.5;
         ctx.strokeRect(x - 1.5, baseY - totalH - 2, barW + 3, totalH + 4);
       }
-      // 柱顶标注上下文规模
+      // 柱顶标注上下文规模：衬底 + 对齐像素，避免和网格叠在一起发虚
       if (!showNums) continue;
-      ctx.font = "9px ui-monospace, monospace";
-      ctx.textAlign = "center";
-      ctx.fillStyle = cssVar("--foreground", "#e6edf3");
-      ctx.fillText(fmtTokShort(s.call.prompt), s.cx, Math.max(baseY - totalH - 4, 11));
+      drawCrispLabel(
+        ctx,
+        fmtTokShort(s.call.prompt),
+        s.cx,
+        Math.max(baseY - totalH - 10, top - 2),
+        dpr,
+        "600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      );
     }
     ctx.restore();
   }, [layoutSlots, drawRoundBands, domain, highlightCallId]);
@@ -757,12 +789,12 @@ function TokenCharts({
   const drawFresh = useCallback(() => {
     const canvas = barRef.current;
     if (!canvas || !canvas.parentElement?.clientWidth) return;
-    const setup = setupCanvas(canvas, 120);
+    const setup = setupCanvas(canvas, 136);
     if (!setup) return;
-    const { ctx, cssW, cssH } = setup;
+    const { ctx, cssW, cssH, dpr } = setup;
     const w = cssW;
     const h = cssH;
-    const top = 18;
+    const top = 26;
     const bottom = h - 8;
     const originX = 4;
     const plotW = Math.max(w - 8, 1);
@@ -801,10 +833,14 @@ function TokenCharts({
       }
       // 新增总量标注在柱顶上方（柱宽足够时才绘制，避免全览时密集噪点）
       if (baseY - yCursor > 0 && barW >= 12) {
-        ctx.fillStyle = cssVar("--foreground", "#e6edf3");
-        ctx.font = "9px ui-monospace, monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(fmtTokShort(s.call.fresh), s.cx, Math.max(yCursor - 4, 12));
+        drawCrispLabel(
+          ctx,
+          fmtTokShort(s.call.fresh),
+          s.cx,
+          Math.max(yCursor - 10, top - 2),
+          dpr,
+          "600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        );
       }
     }
     ctx.restore();
