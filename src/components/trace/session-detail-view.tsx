@@ -12,6 +12,7 @@ import { SessionFeedback } from "./session-feedback";
 import { OutcomeBadge } from "./shared";
 import { SlidePanel } from "./slide-panel";
 import { SessionTreePanel } from "./session-tree-panel";
+import { SessionReviewDock } from "./session-review-dock";
 import {
   buildCalls,
   compressIdleGaps,
@@ -49,6 +50,8 @@ const MAX_LEFT = 520;
 const MIN_RIGHT = 280;
 const MAX_RIGHT = 760;
 const MIN_MID = 420;
+const MIN_DOCK = 160;
+const DEFAULT_DOCK = 280;
 
 function clampPane(value: number, min: number, max: number) {
   if (max < min) return Math.max(120, max);
@@ -109,6 +112,60 @@ function PaneResizer({
   );
 }
 
+/** 评审坞上沿：按住左键改变坞的高度。dy 向下为正，坞变矮。 */
+function RowResizer({
+  label,
+  onDragStart,
+  onDrag,
+}: {
+  label: string;
+  onDragStart: () => void;
+  onDrag: (dy: number) => void;
+}) {
+  const originY = useRef(0);
+  const dragging = useRef(false);
+
+  const end = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label={label}
+      title={label}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragging.current = true;
+        originY.current = e.clientY;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        document.body.style.cursor = "row-resize";
+        document.body.style.userSelect = "none";
+        onDragStart();
+      }}
+      onPointerMove={(e) => {
+        if (!dragging.current) return;
+        onDrag(e.clientY - originY.current);
+      }}
+      onPointerUp={end}
+      onPointerCancel={end}
+      className="group relative z-30 h-0 shrink-0 cursor-row-resize touch-none"
+    >
+      <div className="absolute inset-x-0 -top-1.5 h-3" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px -translate-y-1/2 bg-border group-hover:h-0.5 group-hover:bg-primary group-active:bg-primary" />
+    </div>
+  );
+}
+
 export function SessionDetailView({ sessionId, onBack }: Props) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -130,8 +187,12 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
   const [leftWidth, setLeftWidth] = useState(256);
   const [rightWidth, setRightWidth] = useState(340);
   const [anomalyOpen, setAnomalyOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewHeight, setReviewHeight] = useState(DEFAULT_DOCK);
   const layoutRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const paneOrigin = useRef({ left: 256, right: 340, total: 0 });
+  const reviewOrigin = useRef({ height: DEFAULT_DOCK, total: 0 });
 
   const fetchDetail = useCallback(async () => {
     setLoading(true);
@@ -163,6 +224,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
     setFocusSpanId(null);
     setView("timeline");
     setAnomalyOpen(false);
+    setReviewOpen(false);
     appliedLinkRef.current = false;
   }, [sessionId]);
 
@@ -499,6 +561,26 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             </Button>
           </div>
           <Button
+            variant={reviewOpen ? "default" : "outline"}
+            size="sm"
+            className="h-6 px-2.5 text-xs"
+            aria-pressed={reviewOpen}
+            title="打开质量评审（演示）"
+            onClick={() => {
+              setReviewOpen((open) => {
+                if (open) return false;
+                const total = bodyRef.current?.clientHeight ?? 0;
+                if (total > 0) {
+                  const max = Math.max(MIN_DOCK, Math.floor(total / 2));
+                  setReviewHeight((height) => clampPane(height, MIN_DOCK, max));
+                }
+                return true;
+              });
+            }}
+          >
+            质量评审
+          </Button>
+          <Button
             variant="ghost"
             size="icon"
             className="h-8 w-8"
@@ -528,8 +610,10 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
         </div>
       )}
 
-      {/* 主体：三栏布局。左右分隔条按住左键拖动，中间列和右侧列跟着变宽变窄。 */}
-      <div ref={layoutRef} className="flex flex-1 overflow-hidden">
+      {/* 主体：上面三栏，下面可折叠的质量评审坞。 */}
+      <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* 三栏：左右分隔条按住左键拖动，中间列和右侧列跟着变宽变窄。 */}
+      <div ref={layoutRef} className="flex min-h-0 flex-1 overflow-hidden">
         {/* 左：Span 层级树 */}
         <aside
           className="flex shrink-0 flex-col overflow-hidden bg-card"
@@ -633,6 +717,42 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             )}
           </div>
         </aside>
+      </div>
+
+      {reviewOpen && (
+        <>
+          <RowResizer
+            label="拖动调整评审坞高度"
+            onDragStart={() => {
+              reviewOrigin.current = {
+                height: reviewHeight,
+                total: bodyRef.current?.clientHeight ?? 0,
+              };
+            }}
+            onDrag={(dy) => {
+              const { height, total } = reviewOrigin.current;
+              const max = Math.max(MIN_DOCK, Math.floor(total / 2));
+              setReviewHeight(clampPane(height - dy, MIN_DOCK, max));
+            }}
+          />
+          <SessionReviewDock
+            spans={spans}
+            selectedSpan={selectedSpan}
+            height={reviewHeight}
+            onClose={() => setReviewOpen(false)}
+            onSelectSpan={(spanId) => {
+              setSelectedSpanId(spanId);
+              setFocusSpanId(spanId);
+              setSelectedCall(null);
+              requestAnimationFrame(() => {
+                document
+                  .querySelector(`[data-span-id="${CSS.escape(spanId)}"]`)
+                  ?.scrollIntoView({ block: "center" });
+              });
+            }}
+          />
+        </>
+      )}
       </div>
 
       {/* 会话父子链面板 */}
