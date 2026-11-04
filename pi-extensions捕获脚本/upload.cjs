@@ -135,7 +135,7 @@ function stringifyIfExists(val) {
 function buildSessionPayload(records) {
   const now = new Date().toISOString();
   const session = {
-    sessionID: null, userId: null, projectId: null,
+    sessionID: null, userId: null, projectId: null, projectName: '',
     // 父子链：采集端环境变量链上报（PI_PARENT_SESSION_ID > PI_SESSION_ID 兜底），
     // 每条记录顶层携带，取首个非空值提升到 body。服务端自环守卫兜底。
     parentSessionId: null,
@@ -152,6 +152,7 @@ function buildSessionPayload(records) {
     if (!session.sessionID) session.sessionID = r.sessionID;
     if (!session.userId) session.userId = r.userId;
     if (!session.projectId) session.projectId = r.projectId;
+    if (!session.projectName && r.projectName) session.projectName = r.projectName;
     if (!session.parentSessionId && r.parentSessionId) session.parentSessionId = r.parentSessionId;
     if (r.agentVersion) session.agentVersion = r.agentVersion;
     if (r.promptHash) session.promptHash = r.promptHash;

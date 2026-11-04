@@ -47,6 +47,58 @@ function sha256Hex(text) {
   catch (e) { return '' }
 }
 
+/** 工作目录最后一段，用作本地 spool 文件夹可读名（与入库 derive.projectNameOf 同类用途） */
+function workspaceFolderLabel(cwd) {
+  var p = String(cwd || '').replace(/[\\/]+$/, '')
+  var base = path.basename(p)
+  return base || 'project'
+}
+
+/** Windows / POSIX 通用的目录名片段（不含路径分隔符） */
+function sanitizeDirSegment(name, maxLen) {
+  var max = maxLen || 60
+  var s = String(name || 'project')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!s) s = 'project'
+  if (s.length > max) s = s.slice(0, max)
+  return s
+}
+
+/**
+ * 本地 spool 项目目录：`<可读名>__<16位 projectId>`。
+ * JSONL 内 projectId 仍为 hex，与库表主键一致；仅文件夹便于人工浏览。
+ * PI_CAPTURE_PROJECT_DIR 可完全覆盖中间段（仍追加 __projectId 防碰撞）。
+ */
+function spoolProjectRoot(userId, projectId, cwd) {
+  var custom = process.env.PI_CAPTURE_PROJECT_DIR
+  var label = custom && String(custom).trim()
+    ? sanitizeDirSegment(String(custom).trim(), 50)
+    : sanitizeDirSegment(workspaceFolderLabel(cwd), 50)
+  var segment = label + '__' + projectId
+  return path.join(SPOOL_DIR, userId, segment)
+}
+
+function resolveProjectId(cwd) {
+  var envId = process.env.PI_PROJECT_ID
+  if (envId && String(envId).trim()) return String(envId).trim().slice(0, 64)
+  return sha1Hex(cwd).slice(0, 16)
+}
+
+function writeProjectMetaOnce(projectRoot, projectId, cwd, projectName) {
+  var metaPath = path.join(projectRoot, '.project.json')
+  try {
+    if (fs.existsSync(metaPath)) return
+    safeMkdirp(projectRoot)
+    fs.writeFileSync(metaPath, JSON.stringify({
+      projectId: projectId,
+      projectName: projectName,
+      cwd: cwd
+    }, null, 2) + '\n', 'utf-8')
+  } catch (e) {}
+}
+
 /**
  * 失败文本保留尾部。Python Traceback 的异常类型在最后一行，
  * 只截前 4000 字会把根因截掉。
@@ -320,19 +372,22 @@ function adoptParentChain(sessionId) {
   return currentParentSessionId
 }
 
-function buildOutFile(userId, projectId, sessionId, timestamp) {
+function buildOutFile(userId, projectId, sessionId, timestamp, cwd) {
   var d = new Date(timestamp || Date.now())
   var yyyy = String(d.getFullYear())
   var mm = String(d.getMonth() + 1).padStart(2, '0')
   var dd = String(d.getDate()).padStart(2, '0')
-  var dayDir = path.join(SPOOL_DIR, userId, projectId, yyyy + '-' + mm + '-' + dd)
+  var projectRoot = spoolProjectRoot(userId, projectId, cwd)
+  var projectName = sanitizeDirSegment(workspaceFolderLabel(cwd), 50)
+  writeProjectMetaOnce(projectRoot, projectId, cwd, projectName)
+  var dayDir = path.join(projectRoot, yyyy + '-' + mm + '-' + dd)
   var safeSid = String(sessionId || 'unknown').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 200)
   var ts = String(d.getFullYear()) + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0')
     + '-' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0') + String(d.getSeconds()).padStart(2, '0')
   return path.join(dayDir, 'pi-' + safeSid + '-' + ts + '.jsonl')
 }
 
-function ensureWriter(sessionId, projectId) {
+function ensureWriter(sessionId, projectId, cwd) {
   if (currentSessionId === sessionId && currentWriter) {
     currentProjectId = projectId
     return
@@ -355,7 +410,7 @@ function ensureWriter(sessionId, projectId) {
   if (!currentSessionStartTime) {
     currentSessionStartTime = Date.now()
   }
-  currentOutFile = buildOutFile(USER_ID, projectId, sessionId, currentSessionStartTime)
+  currentOutFile = buildOutFile(USER_ID, projectId, sessionId, currentSessionStartTime, cwd)
   currentWriter = createWriter(currentOutFile)
   appendLogLine(PLUGIN_LOG_PATH, 'writer.rotated sessionId=' + sessionId + ' file=' + currentOutFile)
 }
@@ -464,7 +519,8 @@ function writeEvent(event, ctx, kindOverride, nameOverride, statusOverride, payl
     var sessionId = (ctx && ctx.sessionManager && ctx.sessionManager.getSessionId && ctx.sessionManager.getSessionId()) || (ctx && ctx.sessionId) || null
     if (!sessionId) return
     var cwd = (ctx && ctx.cwd) || (ctx && ctx.sessionManager && ctx.sessionManager.getCwd && ctx.sessionManager.getCwd()) || process.cwd()
-    var projectId = sha1Hex(cwd).slice(0, 16)
+    var projectId = resolveProjectId(cwd)
+    var projectName = sanitizeDirSegment(workspaceFolderLabel(cwd), 50)
     var rawPayload;
     if (payloadOverride !== undefined) {
       rawPayload = payloadOverride
@@ -477,7 +533,7 @@ function writeEvent(event, ctx, kindOverride, nameOverride, statusOverride, payl
       rawPayload = r
     }
     if (rawPayload === null) return
-    ensureWriter(sessionId, projectId)
+    ensureWriter(sessionId, projectId, cwd)
     var tooledPayload = rawPayload
     if (kind === 'tool_call' && rawPayload.input !== undefined) {
       var cp = {};
@@ -507,6 +563,7 @@ function writeEvent(event, ctx, kindOverride, nameOverride, statusOverride, payl
       t: nowIso(),
       userId: USER_ID,
       projectId: projectId,
+      projectName: projectName,
       sessionID: sessionId,
       roundIndex: currentRoundIndex,
       turnId: currentTurnId,
@@ -545,6 +602,9 @@ export default function piCaptureExtension(pi) {
     } else {
       extra.agent_name = 'pi-coding-agent'
     }
+    var cwdForMeta = (ctx && ctx.cwd) || (ctx && ctx.sessionManager && ctx.sessionManager.getCwd && ctx.sessionManager.getCwd()) || process.cwd()
+    extra.cwd = cwdForMeta
+    extra.projectName = sanitizeDirSegment(workspaceFolderLabel(cwdForMeta), 50)
     writeEvent(event, ctx, 'session_start', 'session_start', 'success', Object.assign({}, event, extra))
   })
 
