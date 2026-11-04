@@ -12,7 +12,7 @@ import {
   type TraceSpan,
 } from "./trace-helpers";
 
-const LABEL_W = "w-48"; // 标签列宽度：时间轴 / 甘特图 / 图表严格共用，保证纵向对齐
+const LABEL_W = "w-32"; // 甘特左侧标题列：左对齐且收窄，把横向空间让给时间轴
 const BAR_H = 18;
 
 interface Props {
@@ -340,10 +340,10 @@ export function TraceTimeline({
       className="flex-1 select-none overflow-auto overscroll-contain scrollbar-thin"
       title="滚轮上下滚动整列 · Ctrl+滚轮以光标为中心缩放（甘特独立，下方两张柱状图联动）· 按住左键左右拖动平移 · 双击复位 · 点击柱体查看构成"
     >
-      <div className="relative min-w-[860px] p-4 pb-3 pr-10">
+      <div className="relative min-w-[860px] py-3 pr-3 pl-1.5">
         {/* 时间轴（甘特图专用缩放域） */}
         <div data-zoom-scope="gantt" className="mb-1.5 flex items-center text-[11px] text-muted-foreground">
-          <div className={cn(LABEL_W, "shrink-0 pr-3 text-right")}>
+          <div className={cn(LABEL_W, "shrink-0 truncate pr-2 pl-1 text-left")}>
             {ganttDomain ? (
               <span className="text-[var(--trace-llm)]">已缩放 · 双击复位</span>
             ) : (
@@ -383,8 +383,9 @@ export function TraceTimeline({
                 <div
                   className={cn(
                     LABEL_W,
-                    "flex shrink-0 items-center justify-end gap-1.5 truncate pr-3 text-[11px] hover:brightness-125",
+                    "flex min-w-0 shrink-0 items-center justify-start gap-1.5 pr-2 pl-1 text-[11px] hover:brightness-125",
                   )}
+                  title={group.title}
                 >
                   <span
                     className={cn(
@@ -394,7 +395,7 @@ export function TraceTimeline({
                   />
                   <span
                     className={cn(
-                      "font-medium text-[var(--trace-agent)]",
+                      "min-w-0 truncate text-left font-medium text-[var(--trace-agent)]",
                       group.isBranch && "italic",
                     )}
                   >
@@ -421,9 +422,10 @@ export function TraceTimeline({
                   <div
                     className={cn(
                       LABEL_W,
-                      "flex h-full shrink-0 items-center justify-end gap-1.5 truncate text-[11px]",
+                      "flex h-full min-w-0 shrink-0 items-center justify-start gap-1.5 pr-2 text-[11px]",
                     )}
-                    style={{ paddingRight: row.depth > 0 ? 30 : 12 }}
+                    style={{ paddingLeft: row.depth > 0 ? 16 : 4 }}
+                    title={row.label}
                   >
                     <span
                       className="h-1.5 w-1.5 shrink-0 rounded-full"
@@ -431,7 +433,7 @@ export function TraceTimeline({
                     />
                     <span
                       className={cn(
-                        "truncate",
+                        "min-w-0 truncate text-left",
                         row.depth > 0 ? "text-muted-foreground/80" : "text-muted-foreground",
                       )}
                     >

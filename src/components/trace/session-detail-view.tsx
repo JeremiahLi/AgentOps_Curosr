@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTranscript } from "./trace-transcript";
 import { SessionFactsBar } from "./session-facts-bar";
+import { useBindProcessAnomaly } from "@/components/shell/process-anomaly";
 import { SessionFeedback } from "./session-feedback";
 import { OutcomeBadge } from "./shared";
 import { SlidePanel } from "./slide-panel";
@@ -128,6 +129,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
   const appliedLinkRef = useRef(false);
   const [leftWidth, setLeftWidth] = useState(256);
   const [rightWidth, setRightWidth] = useState(340);
+  const [anomalyOpen, setAnomalyOpen] = useState(false);
   const layoutRef = useRef<HTMLDivElement>(null);
   const paneOrigin = useRef({ left: 256, right: 340, total: 0 });
 
@@ -160,6 +162,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
     setSelectedCall(null);
     setFocusSpanId(null);
     setView("timeline");
+    setAnomalyOpen(false);
     appliedLinkRef.current = false;
   }, [sessionId]);
 
@@ -184,6 +187,10 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
     () => (selectedCall ? (calls.find((c) => c.id === selectedCall.id) ?? null) : null),
     [calls, selectedCall],
   );
+  const hasProcessAnomaly = Boolean(detail?.diagnosis?.anomalous || detail?.facts?.hasAnomaly);
+  const toggleAnomaly = useCallback(() => setAnomalyOpen((open) => !open), []);
+  useBindProcessAnomaly(Boolean(detail) && anomalyOpen, Boolean(detail) && hasProcessAnomaly, toggleAnomaly);
+
   // 跨区域同步标记：点击柱体 → 树/甘特高亮对应 LLM；点击树/甘特中的 LLM → 两图柱体高亮
   const highlightCallId = useMemo(() => {
     if (selectedCall) return selectedCall.id;
@@ -503,7 +510,8 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
         </div>
       </header>
 
-      {(detail.diagnosis || detail.facts) && (
+      {anomalyOpen && (detail.diagnosis || detail.facts) && (
+        <div id="process-anomaly-panel" className="shrink-0">
         <SessionFactsBar
           facts={detail.facts}
           diagnosis={detail.diagnosis}
@@ -517,6 +525,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             });
           }}
         />
+        </div>
       )}
 
       {/* 主体：三栏布局。左右分隔条按住左键拖动，中间列和右侧列跟着变宽变窄。 */}
