@@ -213,7 +213,7 @@ export default function IssuesPage() {
                           {STATUS_LABEL[issue.status] ?? issue.status}
                         </span>
                         <span className="rounded-sm bg-muted px-1.5 py-px text-[10px] text-muted-foreground">
-                          {issue.kind === "tool_failure" ? "工具失败" : "过程错误"}
+                          {issue.kind === "tool_failure" ? "工具失败" : issue.kind === "answer_wrong" ? "回答有误" : "过程错误"}
                         </span>
                         <span className="text-[13px] font-medium">{issue.title}</span>
                       </div>

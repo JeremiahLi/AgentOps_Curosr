@@ -38,7 +38,8 @@ export type IssueKind =
   | "slow_span"
   | "decline"
   | "idle"
-  | "data_quality";
+  | "data_quality"
+  | "answer_wrong";
 
 export interface AgentIssue {
   id: string;
@@ -566,6 +567,23 @@ export async function getAgentDetail(
     if (issue.kind === "tool_failure" && toolName && coveredTools.has(`tool-scene:${toolName}`)) continue;
     if (issue.hitCount <= 0) continue;
     const severity = issue.severity === "critical" || issue.severity === "info" ? issue.severity : "warning";
+    if (issue.kind === "answer_wrong") {
+      issues.push({
+        id: issue.id,
+        severity,
+        kind: "answer_wrong",
+        title: issue.title,
+        conclusion: issue.sampleError ? `裁判摘录：${issue.sampleError.slice(0, 160)}` : "已确认这是一次答错。",
+        evidence: [`累计确认 ${issue.hitCount} 次`, "过程诊断看不出这类问题，它来自结果抽查。"],
+        suggestion: "在问题库里钉成回归用例。新版本对照会按这条签名看它还在不在。",
+        links: issue.evidence.slice(0, 3).map((item, index) => ({
+          sessionId: item.sessionId,
+          label: `证据 ${index + 1}`,
+          spanId: item.spanId || undefined,
+        })),
+      });
+      continue;
+    }
     const kind = issue.kind === "tool_failure" ? "tool_failure" : "error_cluster";
     const samples: IssueSample[] = issue.evidence.flatMap((item) => {
       const span = recordedById.get(item.spanId);

@@ -33,6 +33,7 @@ model Agent {
   releases  Release[]
   issues    Issue[]
   regressionCases RegressionCase[]
+  answerReviews AnswerReview[]
   /// 慢调用等非问题库条目的模型结论缓存。JSON：slot -> { hash, note }
   analysisCache String @default("")
 }
@@ -169,6 +170,7 @@ model Issue {
   agent    Agent           @relation(fields: [agentId], references: [id])
   evidence IssueEvidence[]
   regressionCase RegressionCase?
+  answerReviews AnswerReview[]
 
   @@unique([agentId, signature])
   @@index([status, lastSeenAt])
@@ -243,6 +245,30 @@ model RegressionRun {
   @@unique([caseId, evaluatorId, sessionId])
   @@index([caseId])
   @@index([sessionId])
+}
+
+/// 裁判对已交付回答的抽样。确认之前不进问题库。
+model AnswerReview {
+  id          String   @id @default(cuid())
+  agentId     String
+  sessionId   String
+  releaseId   String?
+  evaluatorId String   @default("accuracy")
+  /// pending = 等确认；confirmed = 已写入问题；dismissed = 忽略；pass = 裁判通过；skipped = 没有可评的回答
+  status      String   @default("pending")
+  verdict     String   @default("")
+  score       Float    @default(0)
+  summary     String   @default("")
+  /// 裁判摘出的原文片段。确认后用它做问题签名。
+  quote       String   @default("")
+  issueId     String?
+  createdAt   DateTime @default(now())
+
+  agent Agent  @relation(fields: [agentId], references: [id])
+  issue Issue? @relation(fields: [issueId], references: [id])
+
+  @@unique([sessionId, evaluatorId])
+  @@index([agentId, status])
 }
 
 model Skill {

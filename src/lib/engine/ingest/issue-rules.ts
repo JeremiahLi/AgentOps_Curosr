@@ -8,7 +8,7 @@ export const TOOL_FAIL_RATE_THRESHOLD = 10;
 export const CLUSTER_MIN_COUNT = 3;
 export const CLUSTER_MIN_SHARE = 5;
 
-export type StoredIssueKind = "tool_failure" | "error_cluster";
+export type StoredIssueKind = "tool_failure" | "error_cluster" | "answer_wrong";
 export type StoredIssueStatus = "candidate" | "open" | "confirmed" | "dismissed" | "fixed";
 export type IssueSeverity = "critical" | "warning" | "info";
 
@@ -31,6 +31,10 @@ export function errorPatternOf(signature: string): string {
 
 export function issueTitle(signature: string): string {
   if (signature === "session|no_delivery") return "没有交付回答";
+  if (signature.startsWith("answer|wrong:")) {
+    const pattern = signature.slice("answer|wrong:".length);
+    return `回答有误：${pattern || "未给出原文"}`;
+  }
   const tool = toolNameOf(signature);
   if (tool) return `${tool}：${errorPatternOf(signature) || NO_ERROR_TEXT}`;
   if (signature.startsWith("llm|err:")) return `模型调用失败：${errorPatternOf(signature)}`;

@@ -99,6 +99,7 @@ export async function buildAgentGuide(
   }
 
   for (const issue of issues) {
+    if (issue.kind === "answer_wrong" || issue.signature.startsWith("answer|wrong:")) continue;
     const parts: string[] = [];
     for (const item of issue.evidence) {
       const span = byId.get(item.spanId);

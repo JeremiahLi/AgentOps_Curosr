@@ -11,6 +11,8 @@ import {
   Bell,
   ListChecks,
   ClipboardList,
+  GitCompareArrows,
+  MessageSquareWarning,
   Settings,
   Bot,
   Users,
@@ -43,6 +45,8 @@ const navGroups = [
     label: "质量与告警",
     items: [
       { label: "问题库", href: "/issues", icon: ListChecks, matchPrefixes: ["/issues"], keywords: ["issue", "问题", "根因", "确认"] },
+      { label: "版本对照", href: "/releases", icon: GitCompareArrows, matchPrefixes: ["/releases"], keywords: ["版本", "对照", "指纹", "变好"] },
+      { label: "结果抽查", href: "/answers", icon: MessageSquareWarning, matchPrefixes: ["/answers"], keywords: ["回答", "答错", "抽样", "裁判"] },
       { label: "回归用例", href: "/regression", icon: ClipboardList, matchPrefixes: ["/regression"], keywords: ["回归", "用例", "通过标准"] },
       { label: "评测中心", href: "/experiments", icon: Gauge, matchPrefixes: ["/experiments"] },
       { label: "告警中心", href: "/alerts", icon: Bell },

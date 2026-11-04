@@ -37,6 +37,7 @@ const KIND_LABEL: Record<string, string> = {
   decline: "使用衰退",
   idle: "零使用",
   data_quality: "数据质量",
+  answer_wrong: "回答有误",
 };
 
 const ANALYZED = new Set(["tool_failure", "error_cluster", "slow_span"]);
