@@ -231,18 +231,14 @@ export function TraceTimeline({
       const origin = isChart ? chartDomainRef.current : ganttDomainRef.current;
       const total = isChart ? callsLenRef.current : totalSecondsRef.current;
       const span = origin.end - origin.start;
-      if (total <= 0 || span >= total - 1e-4) return;
+      if (total <= 0 || width <= 0 || span >= total - 1e-4) return;
 
       const startX = e.clientX;
-      const startY = e.clientY;
+      const pointerId = e.pointerId;
+      const capEl = e.currentTarget;
       let moved = false;
       let raf = 0;
       let dx = 0;
-      const bag = {
-        cleanup: () => {},
-        onMove: (_ev: PointerEvent) => {},
-        onUp: () => {},
-      };
 
       const apply = () => {
         raf = 0;
@@ -251,42 +247,52 @@ export function TraceTimeline({
         else commitGantt(next);
       };
 
-      bag.cleanup = () => {
+      const cleanup = () => {
         if (raf) cancelAnimationFrame(raf);
-        document.body.style.cursor = "";
-        window.removeEventListener("pointermove", bag.onMove);
-        window.removeEventListener("pointerup", bag.onUp);
-        window.removeEventListener("pointercancel", bag.onUp);
-        if (panCleanupRef.current === bag.cleanup) panCleanupRef.current = null;
+        raf = 0;
+        document.documentElement.classList.remove("is-panning");
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        if (capEl.hasPointerCapture(pointerId)) capEl.releasePointerCapture(pointerId);
+        if (panCleanupRef.current === cleanup) panCleanupRef.current = null;
       };
 
-      bag.onMove = (ev: PointerEvent) => {
+      const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
         dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
         if (!moved) {
-          if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
-          // 更像上下滑动时不抢走点击
-          if (Math.abs(dx) < Math.abs(dy)) {
-            bag.cleanup();
-            return;
-          }
+          // 没拉开距离仍算点击。带一点上下抖动也要能拖，不能因此取消整段手势。
+          if (Math.abs(dx) < 4) return;
           moved = true;
-          document.body.style.cursor = "grabbing";
+          document.documentElement.classList.add("is-panning");
+          try {
+            capEl.setPointerCapture(pointerId);
+          } catch {
+            /* 指针已松开 */
+          }
         }
         ev.preventDefault();
         if (!raf) raf = requestAnimationFrame(apply);
       };
 
-      bag.onUp = () => {
-        if (moved) suppressClickRef.current = true;
-        bag.cleanup();
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        if (moved) {
+          dx = ev.clientX - startX;
+          if (raf) cancelAnimationFrame(raf);
+          raf = 0;
+          apply();
+          suppressClickRef.current = true;
+        }
+        cleanup();
       };
 
       panCleanupRef.current?.();
-      panCleanupRef.current = bag.cleanup;
-      window.addEventListener("pointermove", bag.onMove);
-      window.addEventListener("pointerup", bag.onUp);
-      window.addEventListener("pointercancel", bag.onUp);
+      panCleanupRef.current = cleanup;
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
     },
     [commitChart, commitGantt],
   );
@@ -342,7 +348,11 @@ export function TraceTimeline({
     >
       <div className="relative min-w-[860px] py-3 pr-3 pl-1.5">
         {/* 时间轴（甘特图专用缩放域） */}
-        <div data-zoom-scope="gantt" className="mb-1.5 flex items-center text-[11px] text-muted-foreground">
+        <div
+          data-zoom-scope="gantt"
+          data-zoomed={ganttDomain ? "1" : undefined}
+          className="mb-1.5 flex items-center text-[11px] text-muted-foreground"
+        >
           <div className={cn(LABEL_W, "shrink-0 truncate pr-2 pl-1 text-left")}>
             {ganttDomain ? (
               <span className="text-[var(--trace-llm)]">已缩放 · 双击复位</span>
@@ -360,7 +370,11 @@ export function TraceTimeline({
         </div>
 
         {/* 甘特行：Round / Branch 分组框（缩放域：甘特独立） */}
-        <div data-zoom-scope="gantt" className="timeline-grid relative">
+        <div
+          data-zoom-scope="gantt"
+          data-zoomed={ganttDomain ? "1" : undefined}
+          className="timeline-grid relative"
+        >
           {groups.map((group) => (
             <div
               key={group.id}
@@ -504,7 +518,7 @@ export function TraceTimeline({
         </div>
 
         {/* 累计 Token（折线 + 堆叠柱）与 每次调用增量（构成堆叠柱），独立缩放域 */}
-        <div data-zoom-scope="charts">
+        <div data-zoom-scope="charts" data-zoomed={chartDomain ? "1" : undefined}>
           <TokenCharts
             spans={spans}
             domain={cEff}

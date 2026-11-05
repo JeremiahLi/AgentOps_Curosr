@@ -317,6 +317,16 @@
     background-image: linear-gradient(to right, var(--chart-grid) 1px, transparent 1px);
     background-size: 10% 100%;
   }
+  /* 缩放后可按住左键平移：抓手光标盖过柱体上的 pointer */
+  [data-zoomed="1"] [data-zoom-track],
+  [data-zoomed="1"] [data-zoom-track] .span-bar,
+  [data-zoomed="1"] [data-zoom-track] canvas {
+    cursor: grab;
+  }
+  html.is-panning,
+  html.is-panning * {
+    cursor: grabbing !important;
+  }
 
   /* 侧栏质感：静止的角落光和噪点。右缘发丝线不循环。 */
   .dark .hud-glow {
