@@ -45,7 +45,8 @@ const SYSTEM_PROMPT = `你是 Agent 会话评审员。用户会给出一条已�
 规则诊断只是线索，不能当成你的结论。用户问的是轨迹本身对不对得上。
 用中文，写具体：点名工具、参数、报错原文或模型原话。不要只写“可能有问题”。
 
-只输出 JSON：
+回复的第一个字符必须是 {，最后一个字符必须是 }。不要写前言，不要写 Let me，不要用 markdown。
+只输出这个 JSON：
 {
   "summary": "针对这个问题的一两句结论",
   "findings": [
@@ -149,22 +150,24 @@ function buildTranscript(session: {
   return `${trimmed.slice(0, MAX_TRANSCRIPT)}\n…（轨迹后部已截断）`;
 }
 
-function extractJson(text: string): unknown {
+function extractJson(text: string): unknown | null {
   const cleaned = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(cleaned.slice(start, end + 1));
-      } catch {
-        throw new SessionReviewError(`模型没有按 JSON 回答：${cleaned.slice(0, 300)}`, 502);
-      }
+  const tryParse = (value: string): unknown | null => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
     }
-    throw new SessionReviewError(`模型没有按 JSON 回答：${cleaned.slice(0, 300)}`, 502);
+  };
+  const direct = tryParse(cleaned);
+  if (direct && typeof direct === "object") return direct;
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const sliced = tryParse(cleaned.slice(start, end + 1));
+    if (sliced && typeof sliced === "object") return sliced;
   }
+  return null;
 }
 
 /** 评审单独发请求：不强制 response_format，并读 reasoning_content。思考模型常把正文留空。 */
@@ -210,7 +213,9 @@ async function callReviewModel(config: LlmConfig, messages: LlmMessage[]): Promi
 
   const choice = data.choices?.[0];
   const message = choice?.message;
-  const text = (message?.content || message?.reasoning_content || "").trim();
+  const content = (message?.content || "").trim();
+  const reasoning = (message?.reasoning_content || "").trim();
+  const text = content || reasoning;
   if (!text) {
     const reason = choice?.finish_reason || "empty";
     throw new SessionReviewError(
@@ -218,7 +223,10 @@ async function callReviewModel(config: LlmConfig, messages: LlmMessage[]): Promi
       502,
     );
   }
-  return extractJson(text);
+  return extractJson(content) ?? extractJson(reasoning) ?? {
+    summary: text.slice(0, 4000),
+    findings: [],
+  };
 }
 
 function questionFor(preset: ReviewPresetId, custom: string | undefined): string {
@@ -348,7 +356,10 @@ export async function reviewSession(
 
   const parsed = await callReviewModel(config, [
     { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: `${question}\n\n${transcript}` },
+    {
+      role: "user",
+      content: `${question}\n\n${transcript}\n\n只输出一个 JSON 对象，用中文写 summary 和 detail。第一个字符是 {。`,
+    },
   ]);
 
   const knownIds = new Set(spans.map((span) => span.id));

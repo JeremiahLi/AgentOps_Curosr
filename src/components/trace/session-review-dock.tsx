@@ -215,7 +215,7 @@ export function SessionReviewDock({
                 <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">发给模型的问题</p>
                 <p className="mt-1 text-xs leading-5 text-foreground">{result.question}</p>
               </div>
-              <p className="text-xs leading-5 text-foreground">{result.summary}</p>
+              <p className="whitespace-pre-wrap text-xs leading-5 text-foreground">{result.summary}</p>
               {result.findings.length === 0 ? (
                 <p className="text-xs leading-5 text-muted-foreground">模型没有列出可以指到某一步的问题。</p>
               ) : (
