@@ -1,4 +1,5 @@
 import { AppSidebar } from "@/components/shell/app-sidebar";
+import { PreserveMainScroll } from "@/components/shell/preserve-main-scroll";
 
 export default function MainLayout({
   children,
@@ -8,7 +9,7 @@ export default function MainLayout({
   return (
     <div className="flex h-screen overflow-hidden bg-aurora">
       <AppSidebar />
-      <main className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">{children}</main>
+      <PreserveMainScroll>{children}</PreserveMainScroll>
     </div>
   );
 }

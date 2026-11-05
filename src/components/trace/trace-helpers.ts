@@ -429,6 +429,11 @@ const approxTokens = (text?: string | null): number => {
   return Math.round(cjk * 0.7 + (text.length - cjk) / 4);
 };
 
+/** 按字符估算 token。工具 Span 往往没有 API 上报值，右侧明细用它兜底。 */
+export function estimateTokens(text?: string | null): number {
+  return approxTokens(text);
+}
+
 const TOOL_KINDS = new Set(["tool_call", "tool_execution", "command"]);
 
 /**

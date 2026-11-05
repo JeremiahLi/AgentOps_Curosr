@@ -17,6 +17,7 @@ import {
   compressIdleGaps,
   displayDurationMs,
   flattenSession,
+  estimateTokens,
   isFailed,
   isToolKind,
   kindLabel,
@@ -165,6 +166,33 @@ function RowResizer({
   );
 }
 
+/** 非 LLM Span 计入的那次调用：同轮、同分支里，不早于它的下一次 LLM；没有则回退到上一次。 */
+function linkedLlmCall(span: TraceSpan, spans: TraceSpan[], calls: CallInfo[]): CallInfo | null {
+  if (span.kind === "llm_thinking") return null;
+  const same = (s: TraceSpan) =>
+    s.kind === "llm_thinking" &&
+    s.roundIndex === span.roundIndex &&
+    (s.branchId ?? null) === (span.branchId ?? null);
+  const next = spans.find((s) => same(s) && s.startTime >= span.startTime);
+  const target =
+    next ?? [...spans].reverse().find((s) => same(s) && s.startTime <= span.startTime);
+  return target ? (calls.find((c) => c.id === target.id) ?? null) : null;
+}
+
+function roundIdOfSpan(detail: SessionDetail, spanId: string): string | null {
+  for (const round of detail.rounds) {
+    const ids = [
+      round.inputSpan?.id,
+      round.systemPromptSpan?.id,
+      ...round.turns.flatMap((t) => t.spans.map((s) => s.id)),
+      round.answerSpan?.id,
+      ...(round.branches ?? []).flatMap((b) => b.spans.map((s) => s.id)),
+    ];
+    if (ids.includes(spanId)) return round.id;
+  }
+  return null;
+}
+
 export function SessionDetailView({ sessionId, onBack }: Props) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -248,6 +276,34 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
     () => (selectedCall ? (calls.find((c) => c.id === selectedCall.id) ?? null) : null),
     [calls, selectedCall],
   );
+  const linkedCall = useMemo(
+    () => (selectedSpan ? linkedLlmCall(selectedSpan, spans, calls) : null),
+    [selectedSpan, spans, calls],
+  );
+  const rightRef = useRef<HTMLElement>(null);
+
+  /**
+   * Transcript 里点卡片：LLM 打开右侧 Token 构成；其余 Span 清掉上一次柱体选中，
+   * 改由 SpanTokenPanel 呈现本次与关联调用的 Token 明细。
+   * Timeline 下同样选中 Span，但右侧回到 Span 详情。
+   */
+  const selectSpan = useCallback(
+    (id: string) => {
+      setSelectedSpanId(id);
+      if (view === "transcript" && calls.some((c) => c.id === id)) {
+        setSelectedCall((prev) => (prev?.id === id ? prev : { id, view: "prompt" }));
+      } else {
+        setSelectedCall(null);
+      }
+    },
+    [view, calls],
+  );
+
+  // Transcript 点选后，右侧从顶部展示这次的 Token 明细
+  useEffect(() => {
+    if (view !== "transcript") return;
+    rightRef.current?.scrollTo({ top: 0 });
+  }, [view, selectedSpanId, selectedCall]);
   const hasProcessAnomaly = Boolean(detail?.diagnosis?.anomalous || detail?.facts?.hasAnomaly);
   const toggleAnomaly = useCallback(() => setAnomalyOpen((open) => !open), []);
 
@@ -289,18 +345,11 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
       if (next === i) return;
       e.preventDefault();
       const id = navOrder[next].id;
-      setSelectedSpanId(id);
-      setSelectedCall(null);
-      // 跳到视口外的块时，把左树的对应条目带到可见位置
-      requestAnimationFrame(() => {
-        document
-          .querySelector(`[data-span-id="${CSS.escape(id)}"]`)
-          ?.scrollIntoView({ block: "nearest" });
-      });
+      selectSpan(id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedSpanId, navOrder]);
+  }, [selectedSpanId, navOrder, selectSpan]);
 
   const llmCount = useMemo(() => spans.filter((s) => s.kind === "llm_thinking").length, [spans]);
   const toolCount = useMemo(
@@ -607,13 +656,8 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
           facts={detail.facts}
           diagnosis={detail.diagnosis}
           onSelectSpan={(spanId) => {
-            setSelectedSpanId(spanId);
+            selectSpan(spanId);
             setFocusSpanId(spanId);
-            setSelectedCall(null);
-            requestAnimationFrame(() => {
-              const el = document.querySelector(`[data-span-id="${CSS.escape(spanId)}"]`);
-              el?.scrollIntoView({ block: "center" });
-            });
           }}
         />
         </div>
@@ -635,8 +679,11 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             <SpanTree
               detail={detail}
               selectedId={selectedSpanId}
-              onSelect={(id) => setSelectedSpanId(id)}
-              onDeselect={() => setSelectedSpanId(null)}
+              onSelect={selectSpan}
+              onDeselect={() => {
+                setSelectedSpanId(null);
+                setSelectedCall(null);
+              }}
             />
           </div>
         </aside>
@@ -664,8 +711,8 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
               totalSeconds={totalSeconds}
               selectedId={selectedSpanId}
               onSelect={(id) => {
+                // Timeline 条：右栏回到 Span 详情；若选中的是 LLM，两图对应柱体仍保持高亮
                 setSelectedSpanId(id);
-                // 右栏回到 Span 详情；若选中的是 LLM 调用，两图对应柱体仍保持高亮
                 setSelectedCall(null);
               }}
               onSelectCall={(id, v) => {
@@ -680,7 +727,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             <TraceTranscript
               spans={spans}
               selectedId={selectedSpanId}
-              onSelect={setSelectedSpanId}
+              onSelect={selectSpan}
             />
           )}
         </main>
@@ -702,12 +749,17 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
 
         {/* 右：Span 详情 */}
         <aside
+          ref={rightRef}
           className="shrink-0 overflow-y-auto scrollbar-thin bg-card"
           style={{ width: rightWidth }}
         >
           <div className="sticky top-0 z-10 border-b border-border bg-card p-3">
             <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              {selectedCall ? "Token 构成明细" : "Span 详情"}
+              {selectedCall
+                ? "Token 构成明细"
+                : view === "transcript" && selectedSpan
+                  ? "Token 明细"
+                  : "Span 详情"}
             </h2>
           </div>
           <div className="p-4 text-sm">
@@ -715,13 +767,15 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
               <CallBreakdownPanel
                 call={selectedCallInfo}
                 view={selectedCall.view}
-                onBack={() => setSelectedCall(null)}
+                onBack={view === "transcript" ? undefined : () => setSelectedCall(null)}
               />
+            ) : view === "transcript" && selectedSpan ? (
+              <SpanTokenPanel span={selectedSpan} linkedCall={linkedCall} />
             ) : selectedSpan ? (
               <SpanDetails span={selectedSpan} totalSeconds={totalSeconds} />
             ) : (
               <p className="text-muted-foreground">
-                点击左侧树或 Timeline 中的条查看详情；点击下方图表柱体可查看 Token 构成
+                点击左侧树、Timeline 或 Transcript 中的条目查看详情；点击图表柱体或 Transcript 卡片可查看 Token 明细
               </p>
             )}
           </div>
@@ -751,14 +805,8 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             height={reviewHeight}
             onClose={() => setReviewOpen(false)}
             onSelectSpan={(spanId) => {
-              setSelectedSpanId(spanId);
+              selectSpan(spanId);
               setFocusSpanId(spanId);
-              setSelectedCall(null);
-              requestAnimationFrame(() => {
-                document
-                  .querySelector(`[data-span-id="${CSS.escape(spanId)}"]`)
-                  ?.scrollIntoView({ block: "center" });
-              });
             }}
           />
         </>
@@ -849,7 +897,8 @@ function StatusBadge({
   onToggle?: () => void;
   title?: string;
 }) {
-  const text = status === "active" ? "Active" : status === "error" ? "Error" : "Completed";
+  const text =
+    status === "active" ? "Active" : status === "waiting" ? "Waiting" : status === "error" ? "Error" : "Completed";
   const className = cn(
     "rounded-full border px-2.5 py-1 text-xs font-medium",
     status === "error"
@@ -890,6 +939,8 @@ function SpanTree({
 }) {
   // 折叠的 Round（点击 Round 分组头切换）
   const [collapsedRounds, setCollapsedRounds] = useState<Set<string>>(new Set());
+  const rootRef = useRef<HTMLDivElement>(null);
+  const pendingScroll = useRef<string | null>(null);
   const toggleRound = useCallback((id: string) => {
     setCollapsedRounds((prev) => {
       const next = new Set(prev);
@@ -899,8 +950,45 @@ function SpanTree({
     });
   }, []);
 
+  // 中间列 / 键盘选中时，展开所在 Round，并把左树对应行滚进视口。
+  // 查询限定在本树内，避免命中 Transcript 卡片上同名的 data-span-id。
+  useEffect(() => {
+    if (!selectedId) return;
+    pendingScroll.current = selectedId;
+    const roundId = roundIdOfSpan(detail, selectedId);
+    if (!roundId) return;
+    setCollapsedRounds((prev) => {
+      if (!prev.has(roundId)) return prev;
+      const next = new Set(prev);
+      next.delete(roundId);
+      return next;
+    });
+  }, [selectedId, detail]);
+
+  useEffect(() => {
+    const id = pendingScroll.current;
+    if (!id) return;
+    const frame = requestAnimationFrame(() => {
+      const el = rootRef.current?.querySelector(`[data-tree-span-id="${CSS.escape(id)}"]`);
+      if (!(el instanceof HTMLElement)) return;
+      pendingScroll.current = null;
+      const scroller = rootRef.current?.parentElement;
+      if (!scroller) {
+        el.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      const sRect = scroller.getBoundingClientRect();
+      const eRect = el.getBoundingClientRect();
+      let delta = 0;
+      if (eRect.top < sRect.top) delta = eRect.top - sRect.top;
+      else if (eRect.bottom > sRect.bottom) delta = eRect.bottom - sRect.bottom;
+      if (delta !== 0) scroller.scrollTo({ top: scroller.scrollTop + delta });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [selectedId, collapsedRounds]);
+
   return (
-    <div>
+    <div ref={rootRef}>
       {/* Session 根节点 */}
       <div
         onClick={onDeselect}
@@ -1036,6 +1124,7 @@ function TreeItem({
   return (
     <div
       data-span-id={span.id}
+      data-tree-span-id={span.id}
       onClick={(e) => {
         e.stopPropagation();
         onSelect(span.id);
@@ -1202,6 +1291,131 @@ function Pre({ text }: { text: string }) {
   );
 }
 
+/** Transcript 点到非 LLM 卡片（Bash、用户输入等）时，右侧展示本次 Token 与关联 LLM 调用。 */
+function SpanTokenPanel({ span, linkedCall }: { span: TraceSpan; linkedCall: CallInfo | null }) {
+  const reported = span.tokens;
+  const input = reported?.input ?? estimateTokens(span.input);
+  const output = reported?.output ?? estimateTokens(span.output ?? span.content);
+  const cacheRead = reported?.cacheRead ?? 0;
+  const cacheWrite = reported?.cacheWrite ?? 0;
+  const total = reported?.total ?? input + output + cacheRead + cacheWrite;
+  const base = Math.max(total, 1);
+  const estimated = !reported;
+  const fresh = linkedCall ? Math.max(linkedCall.fresh, 1) : 1;
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center gap-2">
+        <span className="h-3 w-3 rounded-full" style={{ background: spanColor(span) }} />
+        <h3 className="text-[15px] font-medium">{span.name}</h3>
+        <span className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-muted-foreground">
+          {kindLabel(span.kind)}
+        </span>
+      </div>
+      <div className="mb-4 font-mono text-xs text-muted-foreground">
+        {formatDuration(span.durationMs)}
+        {span.roundIndex >= 0 ? ` · Round ${span.roundIndex + 1}` : ""}
+      </div>
+
+      <div className="mb-2 text-xs font-medium">{estimated ? "本次（估算）" : "本次"}</div>
+      <div className="mb-3 space-y-2.5">
+        <TokenRow label="输入" value={input} pct={(input / base) * 100} colorVar="--trace-llm" />
+        <TokenRow label="输出" value={output} pct={(output / base) * 100} colorVar="--trace-tool" />
+        <TokenRow
+          label="缓存读"
+          value={cacheRead}
+          pct={(cacheRead / base) * 100}
+          colorVar="--chart-bar-in"
+        />
+        <TokenRow
+          label="缓存写"
+          value={cacheWrite}
+          pct={(cacheWrite / base) * 100}
+          colorVar="--chart-new"
+        />
+      </div>
+      <div className="flex items-center justify-between border-t border-border/60 pt-2 text-xs">
+        <span className="text-muted-foreground">合计</span>
+        <span className="font-mono font-medium">{formatTokens(total)}</span>
+      </div>
+      {estimated && (
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground/70">
+          该 Span 没有单独上报 token，按字符估算（汉字约 0.7 token/字，其余约 4 字符/token）。工具结果的真实消耗记在随后的 LLM 调用上。
+        </p>
+      )}
+
+      {linkedCall && (
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="mb-3 text-xs font-medium">
+            关联第 {linkedCall.order} 次 LLM 调用
+            {linkedCall.model ? ` · ${linkedCall.model}` : ""}
+          </div>
+          <div className="mb-4 space-y-2.5">
+            <TokenRow
+              label="上下文规模"
+              value={linkedCall.prompt}
+              pct={100}
+              colorVar="--muted-foreground"
+              desc="input + 缓存读 + 缓存写"
+            />
+            <TokenRow
+              label="新增（未命中缓存）"
+              value={linkedCall.fresh}
+              pct={linkedCall.prompt > 0 ? (linkedCall.fresh / linkedCall.prompt) * 100 : 0}
+              colorVar="--chart-new"
+              desc="本次新拼入上下文的部分"
+            />
+            <TokenRow
+              label="复用（缓存读）"
+              value={linkedCall.reuse}
+              pct={linkedCall.prompt > 0 ? (linkedCall.reuse / linkedCall.prompt) * 100 : 0}
+              colorVar="--chart-bar-in"
+              desc="命中提示缓存的已有前缀"
+            />
+            <div className="flex items-center justify-between border-t border-border/60 pt-2 text-xs">
+              <span className="text-muted-foreground">本次输出（不计入输入）</span>
+              <span className="font-mono">{formatTokens(linkedCall.output)}</span>
+            </div>
+          </div>
+          <div className="mb-2 flex items-baseline justify-between">
+            <span className="text-xs font-medium">新增内部构成</span>
+            <span className="text-[10px] text-muted-foreground/70">按来源字符数估算</span>
+          </div>
+          <div className="space-y-2.5">
+            {linkedCall.parts.length === 0 && (
+              <p className="text-xs text-muted-foreground">该调用没有新增输入（全部命中缓存）</p>
+            )}
+            {linkedCall.parts.map((p) => {
+              const pct = (p.value / fresh) * 100;
+              return (
+                <div key={p.key} title={p.desc}>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                      style={{ background: `var(${p.colorVar})` }}
+                    />
+                    <span className="flex-1 truncate">{p.label}</span>
+                    <span className="font-mono font-medium">{formatTokens(p.value)}</span>
+                    <span className="w-12 shrink-0 text-right font-mono text-muted-foreground">
+                      {pct.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="mt-1 ml-[18px] h-1.5 overflow-hidden rounded-full bg-muted/60">
+                    <div
+                      className="h-full rounded-full"
+                      style={{ width: `${Math.min(pct, 100)}%`, background: `var(${p.colorVar})` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ==================== Token 调用构成明细（点击图表柱体后展示） ====================
 
 function CallBreakdownPanel({
@@ -1211,7 +1425,7 @@ function CallBreakdownPanel({
 }: {
   call: CallInfo;
   view: "prompt" | "new";
-  onBack: () => void;
+  onBack?: () => void;
 }) {
   // 三档真值：上下文规模 / 新增（未命中缓存）/ 复用（缓存读）
   const prompt = Math.max(call.prompt, 1);
@@ -1223,13 +1437,15 @@ function CallBreakdownPanel({
     <div>
       {/* 头部：返回 + 调用标识 */}
       <div className="mb-3 flex items-center gap-2">
-        <button
-          onClick={onBack}
-          className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-          title="返回 Span 详情"
-        >
-          ← 返回
-        </button>
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            title="返回 Span 详情"
+          >
+            ← 返回
+          </button>
+        )}
         <h3 className="text-[15px] font-medium">
           第 {call.order} 次 LLM 调用 · {view === "prompt" ? "上下文构成" : "新增构成"}
         </h3>
