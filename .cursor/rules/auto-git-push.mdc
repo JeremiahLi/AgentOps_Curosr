@@ -9,7 +9,12 @@ When you **finish a task that modified project files** (not question-only turns)
 
 1. Run `git status` and `git diff` to review what will ship.
 2. **Do not** stage or commit: `.env`, `.env.*`, `prisma/dev.db`, `node_modules/`, `.next/`, build logs, or secrets.
-3. Stage relevant changes, write a **short intentional commit message** (prefer `fix:` / `feat:` / `chore:` + why).
+3. Stage relevant changes, write a **short intentional commit message in Chinese**.
+   - Keep the type in English: `feat` / `fix` / `docs` / `style` / `refactor` / `perf` / `test` / `chore` / `ci` / `revert`.
+   - Scope (optional) and subject are Chinese. Subject is a verb-object phrase, about 50 characters or fewer, no trailing period.
+   - Body, when needed, is Chinese and says why.
+   - Format: `<type>(<scope>): <中文简述>`
+   - Example: `fix(支付): 修复回调签名校验失败`
 4. Commit, then push: `git push origin HEAD` (remote: `https://github.com/JeremiahLi/AgentOps_Curosr.git`, branch usually `main`).
 5. If push fails (auth/network), report the error and tell the user what to run; do not claim success.
 

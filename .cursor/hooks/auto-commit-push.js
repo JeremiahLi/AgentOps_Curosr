@@ -66,7 +66,7 @@ function main() {
     .slice(0, 25)
     .map((f) => `- ${f}`)
     .join("\n");
-  const message = `chore: auto-sync ${stamp}\n\n${body}`;
+  const message = `chore: 自动同步工作区变更 ${stamp}\n\n${body}`;
 
   const msgFile = path.join(os.tmpdir(), `cursor-auto-commit-${process.pid}.txt`);
   fs.writeFileSync(msgFile, message, "utf8");
