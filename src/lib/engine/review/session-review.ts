@@ -170,8 +170,14 @@ function extractJson(text: string): unknown | null {
   return null;
 }
 
+const FORMAT_PROMPT = `把下面的评审整理成 JSON。不要补充原文里没有的事实。summary 和 detail 用中文。
+spanId 抄原文里出现的步骤 id，可以是前缀。
+只输出 JSON，第一个字符是 {。
+{"summary":"一两句中文结论","findings":[{"category":"reasoning 或 control 或 action","severity":"high 或 medium 或 low","title":"不超过 24 个字","detail":"中文证据","spanId":"步骤 id"}]}
+findings 最多 5 条。`;
+
 /** 评审单独发请求：不强制 response_format，并读 reasoning_content。思考模型常把正文留空。 */
-async function callReviewModel(config: LlmConfig, messages: LlmMessage[]): Promise<unknown> {
+async function completeReview(config: LlmConfig, messages: LlmMessage[]): Promise<string> {
   const url = `${config.baseUrl.replace(/\/$/, "")}/chat/completions`;
   let response: Response;
   try {
@@ -185,7 +191,7 @@ async function callReviewModel(config: LlmConfig, messages: LlmMessage[]): Promi
         model: config.model,
         messages,
         temperature: 0,
-        max_tokens: 4096,
+        max_tokens: 8192,
       }),
     });
   } catch (err) {
@@ -223,10 +229,18 @@ async function callReviewModel(config: LlmConfig, messages: LlmMessage[]): Promi
       502,
     );
   }
-  return extractJson(content) ?? extractJson(reasoning) ?? {
-    summary: text.slice(0, 4000),
-    findings: [],
-  };
+  return text;
+}
+
+async function callReviewModel(config: LlmConfig, messages: LlmMessage[]): Promise<unknown> {
+  const text = await completeReview(config, messages);
+  const parsed = extractJson(text);
+  if (parsed) return parsed;
+  const formatted = await completeReview(config, [
+    { role: "system", content: FORMAT_PROMPT },
+    { role: "user", content: text.slice(0, 8000) },
+  ]);
+  return extractJson(formatted) ?? { summary: text.slice(0, 4000), findings: [] };
 }
 
 function questionFor(preset: ReviewPresetId, custom: string | undefined): string {
@@ -249,6 +263,15 @@ function asSeverity(value: unknown): ReviewFinding["severity"] {
   return "medium";
 }
 
+function resolveSpanId(raw: string, knownIds: Set<string>): string {
+  const token = raw.trim();
+  if (!token) return "";
+  if (knownIds.has(token)) return token;
+  if (token.length < 6) return "";
+  const matches = [...knownIds].filter((id) => id.startsWith(token));
+  return matches.length === 1 ? matches[0] : "";
+}
+
 function parseFindings(raw: unknown, knownIds: Set<string>): { summary: string; findings: ReviewFinding[] } {
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const summary = typeof record.summary === "string" ? record.summary.trim() : "";
@@ -261,7 +284,7 @@ function parseFindings(raw: unknown, knownIds: Set<string>): { summary: string; 
     const title = typeof row.title === "string" ? row.title.trim() : "";
     const detail = typeof row.detail === "string" ? row.detail.trim() : "";
     if (!category || !title || !detail) continue;
-    const spanId = typeof row.spanId === "string" && knownIds.has(row.spanId) ? row.spanId : "";
+    const spanId = typeof row.spanId === "string" ? resolveSpanId(row.spanId, knownIds) : "";
     findings.push({
       category,
       severity: asSeverity(row.severity),

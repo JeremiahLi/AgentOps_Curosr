@@ -202,7 +202,7 @@ export function SessionReviewDock({
 
         <div className="min-w-0 flex-1 overflow-y-auto p-3">
           {loading ? (
-            <p className="text-xs leading-5 text-muted-foreground">正在把轨迹和这个问题发给模型，通常需要几十秒。</p>
+            <p className="text-xs leading-5 text-muted-foreground">正在把轨迹和这个问题发给模型，长轨迹通常要一两分钟。</p>
           ) : error ? (
             <p className="text-xs leading-5 text-destructive">{error}</p>
           ) : !result ? (
