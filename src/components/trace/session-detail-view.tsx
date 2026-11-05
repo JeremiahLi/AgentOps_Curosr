@@ -745,6 +745,7 @@ export function SessionDetailView({ sessionId, onBack }: Props) {
             }}
           />
           <SessionReviewDock
+            sessionId={sessionId}
             spans={spans}
             selectedSpan={selectedSpan}
             height={reviewHeight}

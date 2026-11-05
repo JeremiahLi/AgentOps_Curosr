@@ -1,30 +1,34 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { isFailed, kindLabel, type TraceSpan } from "./trace-helpers";
+import { kindLabel, type TraceSpan } from "./trace-helpers";
 
-type ReviewPreset = "full" | "reasoning" | "control" | "action" | "explain";
+type ReviewPreset = "full" | "reasoning" | "control" | "action" | "explain" | "custom";
 type ReviewCategory = "reasoning" | "control" | "action";
 type ReviewSeverity = "high" | "medium" | "low";
 
 interface ReviewFinding {
-  id: string;
   category: ReviewCategory;
   severity: ReviewSeverity;
   title: string;
   detail: string;
   spanId: string;
-  spanName: string;
-  spanKind: string;
 }
 
-const PRESETS: Array<{ id: Exclude<ReviewPreset, "explain">; label: string; hint: string }> = [
-  { id: "full", label: "全面体检", hint: "推理、控制流、动作各看一条" },
-  { id: "reasoning", label: "推理", hint: "上下文、指令、已有证据" },
-  { id: "control", label: "控制流", hint: "循环、该停不停、步数" },
-  { id: "action", label: "动作", hint: "工具选择、参数、结果是否被用上" },
+interface ReviewResult {
+  model: string;
+  question: string;
+  summary: string;
+  findings: ReviewFinding[];
+}
+
+const PRESETS: Array<{ id: Exclude<ReviewPreset, "explain" | "custom">; label: string; hint: string }> = [
+  { id: "full", label: "全面体检", hint: "推理、控制流、动作，只报有证据的" },
+  { id: "reasoning", label: "推理", hint: "上下文不够 / 用错 / 没听指令 / 漏看证据" },
+  { id: "control", label: "控制流", hint: "死循环 / 该停不停 / 不该停却停 / 步数打满" },
+  { id: "action", label: "动作", hint: "选错工具 / 参数不合法 / 执行失败 / 结果被无视" },
 ];
 
 const CATEGORY_LABEL: Record<ReviewCategory, string> = {
@@ -39,192 +43,15 @@ const SEVERITY_LABEL: Record<ReviewSeverity, string> = {
   low: "低",
 };
 
-function isTool(span: TraceSpan): boolean {
-  return span.kind === "tool_call" || span.kind === "tool_execution" || span.kind === "command";
-}
-
-function toolSpans(spans: TraceSpan[]): TraceSpan[] {
-  return spans.filter(isTool);
-}
-
-/** 同名工具出现最多次的最后一次；没有重复时用最后一次工具调用。 */
-function repeatedToolSpan(spans: TraceSpan[]): TraceSpan | undefined {
-  const groups = new Map<string, TraceSpan[]>();
-  for (const span of toolSpans(spans)) {
-    const list = groups.get(span.name) ?? [];
-    list.push(span);
-    groups.set(span.name, list);
-  }
-  let best: TraceSpan[] = [];
-  for (const list of groups.values()) {
-    if (list.length > best.length) best = list;
-  }
-  if (best.length >= 2) return best[best.length - 1];
-  const tools = toolSpans(spans);
-  return tools[tools.length - 1];
-}
-
-function reasoningSpans(spans: TraceSpan[]): TraceSpan[] {
-  const llm = spans.filter((span) => span.kind === "llm_thinking");
-  if (llm.length > 0) return llm;
-  return spans.filter((span) => span.kind === "system_prompt" || span.kind === "user" || span.kind === "answer");
-}
-
-function distinct(preferred: Array<TraceSpan | undefined>, limit: number): TraceSpan[] {
-  const used = new Set<string>();
-  const out: TraceSpan[] = [];
-  for (const span of preferred) {
-    if (!span || used.has(span.id)) continue;
-    used.add(span.id);
-    out.push(span);
-    if (out.length >= limit) break;
-  }
-  return out;
-}
-
-function finding(
-  span: TraceSpan,
-  category: ReviewCategory,
-  severity: ReviewSeverity,
-  title: string,
-  detail: string,
-): ReviewFinding {
-  return {
-    id: `${category}-${span.id}-${title}`,
-    category,
-    severity,
-    title,
-    detail,
-    spanId: span.id,
-    spanName: span.name,
-    spanKind: span.kind,
-  };
-}
-
-function reasoningFinding(span: TraceSpan, index: number): ReviewFinding {
-  const variants = [
-    {
-      title: "可能漏看了已有证据",
-      detail: "演示：这一步没有点名前面已经拿到的结果。正式评审会核对是上下文不够、用错上下文，还是漏看了已有证据。",
-    },
-    {
-      title: "可能没有遵守指令",
-      detail: "演示：系统提示里的约束没有出现在这一步的输出里。正式评审会判断是没遵守指令，还是这一步本来就不用管。",
-    },
-  ];
-  const variant = variants[index % variants.length];
-  return finding(span, "reasoning", "medium", variant.title, variant.detail);
-}
-
-function controlFinding(span: TraceSpan, index: number): ReviewFinding {
-  const variants = [
-    {
-      title: "同名动作又出现了一次",
-      detail: "演示：同名工具再次出现。正式评审会区分死循环、该停却继续，和不该停却停。",
-    },
-    {
-      title: "后段仍在加步骤",
-      detail: "演示：轨迹后段还在调用工具。正式评审会看是步数打满，还是任务确实还没做完。",
-    },
-  ];
-  const variant = variants[index % variants.length];
-  return finding(span, "control", index === 0 ? "medium" : "low", variant.title, variant.detail);
-}
-
-function actionFinding(span: TraceSpan, index: number): ReviewFinding {
-  const failed = isFailed(span);
-  const variants = [
-    {
-      title: failed ? "工具执行失败" : "工具选择需要核对",
-      detail: failed
-        ? "演示：这次工具调用状态是失败。正式评审会核对是工具选错、参数不合法，还是执行本身失败。"
-        : "演示：这一步选了这个工具。正式评审会对照任务，看工具和参数是否对得上。",
-    },
-    {
-      title: "工具结果可能没有被后文用上",
-      detail: "演示：这次工具有返回。正式评审会看后面的步骤有没有接上，判断结果是被无视了，还是已经够用。",
-    },
-  ];
-  const variant = variants[index % variants.length];
-  return finding(span, "action", failed ? "high" : "medium", variant.title, variant.detail);
-}
-
-function explainFinding(span: TraceSpan): ReviewFinding {
-  if (isTool(span)) {
-    return finding(
-      span,
-      "action",
-      isFailed(span) ? "high" : "medium",
-      isFailed(span) ? "这一步的工具调用失败了" : "看这一步的工具是否用对",
-      `演示：正式评审会对照「${span.name}」的入参、返回和紧接着的下一步，说明是选错工具、参数不合法、执行失败，还是结果被后面无视。`,
-    );
-  }
-  if (span.kind === "llm_thinking" || span.kind === "system_prompt" || span.kind === "user") {
-    return finding(
-      span,
-      "reasoning",
-      "medium",
-      "看这一步的推理是否接上上下文",
-      `演示：正式评审会对照「${span.name}」前后的证据，说明是上下文不够、用错上下文、没遵守指令，还是漏看了已有结果。`,
-    );
-  }
-  return finding(
-    span,
-    "control",
-    "low",
-    "看这一步该不该出现",
-    `演示：正式评审会对照「${span.name}」在整段轨迹中的位置，说明是该停不停、不该停却停，还是步数已经打满。`,
-  );
-}
-
-function demoFindings(
-  preset: ReviewPreset,
-  spans: TraceSpan[],
-  selectedSpan: TraceSpan | null,
-): ReviewFinding[] {
-  if (preset === "explain") return selectedSpan ? [explainFinding(selectedSpan)] : [];
-  if (spans.length === 0) return [];
-
-  if (preset === "reasoning") {
-    const picked = distinct(reasoningSpans(spans), 2);
-    const source = picked.length > 0 ? picked : spans.slice(0, 1);
-    return source.map((span, index) => reasoningFinding(span, index));
-  }
-  if (preset === "control") {
-    const tools = toolSpans(spans);
-    const picked = distinct([repeatedToolSpan(spans), tools[0], spans[spans.length - 1]], 2);
-    return picked.map((span, index) => controlFinding(span, index));
-  }
-  if (preset === "action") {
-    const tools = toolSpans(spans);
-    const picked = distinct([tools.find(isFailed), tools[0], spans.find(isFailed)], 2);
-    const source = picked.length > 0 ? picked : spans.slice(0, 1);
-    return source.map((span, index) => actionFinding(span, index));
-  }
-
-  const picked = distinct(
-    [
-      reasoningSpans(spans)[0],
-      repeatedToolSpan(spans),
-      toolSpans(spans).find(isFailed) ?? toolSpans(spans)[0],
-    ],
-    3,
-  );
-  const source = picked.length > 0 ? picked : spans.slice(0, 1);
-  return source.map((span, index) => {
-    if (index === 0) return reasoningFinding(span, 0);
-    if (index === 1) return controlFinding(span, 0);
-    return actionFinding(span, 0);
-  });
-}
-
 export function SessionReviewDock({
+  sessionId,
   spans,
   selectedSpan,
   height,
   onClose,
   onSelectSpan,
 }: {
+  sessionId: string;
   spans: TraceSpan[];
   selectedSpan: TraceSpan | null;
   height: number;
@@ -232,14 +59,49 @@ export function SessionReviewDock({
   onSelectSpan: (spanId: string) => void;
 }) {
   const [preset, setPreset] = useState<ReviewPreset | null>(null);
-  const [findings, setFindings] = useState<ReviewFinding[]>([]);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<ReviewResult | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const spanById = new Map(spans.map((span) => [span.id, span]));
 
-  const ask = (next: ReviewPreset) => {
+  const ask = async (next: ReviewPreset, question?: string) => {
+    if (next === "explain" && !selectedSpan) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setPreset(next);
-    setFindings(next === "explain" ? [] : demoFindings(next, spans, selectedSpan));
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          preset: next,
+          spanId: next === "explain" ? selectedSpan?.id : undefined,
+          question,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as (ReviewResult & { error?: string }) | null;
+      if (!res.ok) throw new Error(data?.error || `请求失败（${res.status}）`);
+      if (!data?.question) throw new Error("模型没有返回可显示的结果");
+      setResult({
+        model: data.model,
+        question: data.question,
+        summary: data.summary,
+        findings: Array.isArray(data.findings) ? data.findings : [],
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setResult(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (abortRef.current === controller) setLoading(false);
+    }
   };
-
-  const shown = preset === "explain" ? demoFindings("explain", spans, selectedSpan) : findings;
 
   return (
     <section
@@ -250,8 +112,8 @@ export function SessionReviewDock({
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="text-xs font-medium">质量评审</h2>
-          <span className="truncate rounded-sm bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning ring-1 ring-warning/30">
-            演示数据，尚未调用模型
+          <span className="truncate text-[10px] text-muted-foreground">
+            {result?.model ? `刚才用的是 ${result.model}` : "点问题后，发给设置里当前使用的模型"}
           </span>
         </div>
         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onClose}>
@@ -260,15 +122,19 @@ export function SessionReviewDock({
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="flex w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-border p-2">
+        <div className="flex w-60 shrink-0 flex-col gap-1 overflow-y-auto border-r border-border p-2">
+          <p className="px-1 pb-1 text-[10px] leading-4 text-muted-foreground">
+            下面每个按钮都是一个固定问题。点击后连同这条 Session 的轨迹一起发给模型。
+          </p>
           {PRESETS.map((item) => (
             <button
               key={item.id}
               type="button"
+              disabled={loading}
               aria-pressed={preset === item.id}
-              onClick={() => ask(item.id)}
+              onClick={() => void ask(item.id)}
               className={cn(
-                "rounded-md px-2 py-1.5 text-left",
+                "rounded-md px-2 py-1.5 text-left disabled:opacity-50",
                 preset === item.id ? "bg-primary text-primary-foreground" : "hover:bg-muted",
               )}
             >
@@ -287,10 +153,11 @@ export function SessionReviewDock({
           {selectedSpan && (
             <button
               type="button"
+              disabled={loading}
               aria-pressed={preset === "explain"}
-              onClick={() => ask("explain")}
+              onClick={() => void ask("explain")}
               className={cn(
-                "rounded-md px-2 py-1.5 text-left",
+                "rounded-md px-2 py-1.5 text-left disabled:opacity-50",
                 preset === "explain" ? "bg-primary text-primary-foreground" : "hover:bg-muted",
               )}
             >
@@ -307,67 +174,95 @@ export function SessionReviewDock({
             </button>
           )}
 
-          <label className="mt-2 block px-1 text-[11px] text-muted-foreground">
-            自定义问题
-            <textarea
-              disabled
-              rows={3}
-              placeholder="接上模型后才能用"
-              className="mt-1 w-full resize-none rounded-md border border-border bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground"
-            />
-          </label>
-          <p className="px-1 text-[10px] leading-4 text-muted-foreground">演示阶段不会把这句话发给模型。</p>
+          <form
+            className="mt-2 px-1"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const question = draft.trim();
+              if (!question || loading) return;
+              void ask("custom", question);
+            }}
+          >
+            <label className="block text-[11px] text-muted-foreground">
+              自定义问题
+              <textarea
+                value={draft}
+                rows={3}
+                disabled={loading}
+                placeholder="例如：为什么第三次 read 之后还在改同一份文件？"
+                onChange={(event) => setDraft(event.target.value)}
+                className="mt-1 w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground disabled:opacity-50"
+              />
+            </label>
+            <Button type="submit" size="sm" className="mt-1 h-6 px-2 text-xs" disabled={loading || !draft.trim()}>
+              发给模型
+            </Button>
+          </form>
         </div>
 
         <div className="min-w-0 flex-1 overflow-y-auto p-3">
-          {preset === null ? (
+          {loading ? (
+            <p className="text-xs leading-5 text-muted-foreground">正在把轨迹和这个问题发给模型，通常需要几十秒。</p>
+          ) : error ? (
+            <p className="text-xs leading-5 text-destructive">{error}</p>
+          ) : !result ? (
             <p className="text-xs leading-5 text-muted-foreground">
-              选一个预置问题，查看示例结论。结论里的步骤来自当前 Session，点「定位」会选中它，右侧仍显示 Span 详情。
-            </p>
-          ) : shown.length === 0 ? (
-            <p className="text-xs leading-5 text-muted-foreground">
-              {preset === "explain" ? "先在左侧树或时间线里选中一步。" : "这个 Session 没有可引用的步骤。"}
+              还没有发问。模型只会根据这条轨迹里的输入、输出和报错来答，并尽量指出具体的一步。过长的正文会被截断。点「定位」后，右侧仍显示这一步的 Span 详情。
             </p>
           ) : (
-            <ul className="space-y-2">
-              {shown.map((item) => {
-                const active = selectedSpan?.id === item.spanId;
-                return (
-                  <li
-                    key={item.id}
-                    className={cn(
-                      "rounded-md border px-3 py-2",
-                      active ? "border-primary bg-primary/5" : "border-border",
-                    )}
-                  >
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="rounded-sm bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground">
-                        {CATEGORY_LABEL[item.category]}
-                      </span>
-                      <span
+            <div className="space-y-3">
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">发给模型的问题</p>
+                <p className="mt-1 text-xs leading-5 text-foreground">{result.question}</p>
+              </div>
+              <p className="text-xs leading-5 text-foreground">{result.summary}</p>
+              {result.findings.length === 0 ? (
+                <p className="text-xs leading-5 text-muted-foreground">模型没有列出可以指到某一步的问题。</p>
+              ) : (
+                <ul className="space-y-2">
+                  {result.findings.map((item, index) => {
+                    const span = item.spanId ? spanById.get(item.spanId) : undefined;
+                    const active = selectedSpan?.id === item.spanId && Boolean(item.spanId);
+                    return (
+                      <li
+                        key={`${item.spanId}-${index}`}
                         className={cn(
-                          "rounded-sm px-1.5 py-0.5 text-[10px] font-medium",
-                          item.severity === "high" && "bg-destructive/10 text-destructive",
-                          item.severity === "medium" && "bg-warning/10 text-warning",
-                          item.severity === "low" && "bg-muted text-muted-foreground",
+                          "rounded-md border px-3 py-2",
+                          active ? "border-primary bg-primary/5" : "border-border",
                         )}
                       >
-                        {SEVERITY_LABEL[item.severity]}
-                      </span>
-                      <span className="text-xs font-medium">{item.title}</span>
-                    </div>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{item.detail}</p>
-                    <button
-                      type="button"
-                      className="mt-1.5 text-[11px] text-primary underline-offset-2 hover:underline"
-                      onClick={() => onSelectSpan(item.spanId)}
-                    >
-                      定位到 {kindLabel(item.spanKind)} · {item.spanName}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="rounded-sm bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+                            {CATEGORY_LABEL[item.category] ?? item.category}
+                          </span>
+                          <span
+                            className={cn(
+                              "rounded-sm px-1.5 py-0.5 text-[10px] font-medium",
+                              item.severity === "high" && "bg-destructive/10 text-destructive",
+                              item.severity === "medium" && "bg-warning/10 text-warning",
+                              item.severity === "low" && "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {SEVERITY_LABEL[item.severity] ?? item.severity}
+                          </span>
+                          <span className="text-xs font-medium">{item.title}</span>
+                        </div>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">{item.detail}</p>
+                        {span && (
+                          <button
+                            type="button"
+                            className="mt-1.5 text-[11px] text-primary underline-offset-2 hover:underline"
+                            onClick={() => onSelectSpan(span.id)}
+                          >
+                            定位到 {kindLabel(span.kind)} · {span.name}
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       </div>
