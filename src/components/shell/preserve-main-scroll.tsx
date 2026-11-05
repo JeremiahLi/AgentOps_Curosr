@@ -18,6 +18,8 @@ function pageKey(pathname: string) {
 let pendingPop = false;
 /** 当前文档里发生过客户端跳转。直链打开详情时为 false，返回应去列表而不是跳出站点。 */
 let clientNavigated = false;
+/** 后退落到的 URL。效果重跑时仍要恢复，避免第一次清理把恢复掐掉。 */
+let wantRestoreKey: string | null = null;
 
 export function canReturnInApp() {
   return clientNavigated && window.history.length > 1;
@@ -134,9 +136,12 @@ export function PreserveMainScroll({ children }: { children: ReactNode }) {
     const key = pageKey(pathname);
     const isPop = pendingPop;
     pendingPop = false;
-    if (keyRef.current && keyRef.current !== key) clientNavigated = true;
+    const prevKey = keyRef.current;
+    if (prevKey && prevKey !== key) clientNavigated = true;
+    if (isPop) wantRestoreKey = key;
+    else if (prevKey && prevKey !== key) wantRestoreKey = null;
     keyRef.current = key;
-    if (!isPop) return;
+    if (wantRestoreKey !== key) return;
 
     const y = mainPositions.get(key) ?? 0;
     ignoreRef.current = true;
