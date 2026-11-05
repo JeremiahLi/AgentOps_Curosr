@@ -138,9 +138,14 @@ export function PreserveMainScroll({ children }: { children: ReactNode }) {
     pendingPop = false;
     const prevKey = keyRef.current;
     if (prevKey && prevKey !== key) clientNavigated = true;
-    if (isPop) wantRestoreKey = key;
+    const prevPath = prevKey.split("?")[0];
+    const fromSessionDetail = /^\/trace\/[^/]+$/.test(prevPath);
+    const saved = mainPositions.get(key);
+    if (isPop || (fromSessionDetail && saved != null && prevKey !== key)) wantRestoreKey = key;
     else if (prevKey && prevKey !== key) wantRestoreKey = null;
     keyRef.current = key;
+    // 返回按钮在没有 document.referrer 时会 push 回列表，不走 popstate。
+    // 从某条 session 离开、且目的页有记下的位置时，同样恢复。
     if (wantRestoreKey !== key) return;
 
     const y = mainPositions.get(key) ?? 0;
