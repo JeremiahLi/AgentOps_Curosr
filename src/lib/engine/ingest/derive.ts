@@ -203,3 +203,35 @@ export function computeOutcome(spans: InSpanLike[]): {
 
   return { outcome: errors > 0 ? "partial" : "success", fatalErrors, errors };
 }
+
+export type UploadedSessionStatus = "active" | "waiting" | "completed" | "error";
+
+/**
+ * 上传时的会话生命周期。
+ *
+ * 采集端每 30 秒、以及每次 agent_end 都会上传。agent_end 只表示这一轮代理停了，
+ * 会话往往还开着：要么工具链还在跑，要么已经吐出中间结果、等人类反馈。
+ * 这两种都不能写成终态，否则列表的「结果」会变成完成/成功。
+ *
+ * - open + 末条实质 span 是 answer：代理已停下等人类（waiting）
+ * - open + 其它：还在跑（active）
+ * - 未声明 open（旧采集端）或进程已退出 / 已 session_shutdown：按 computeOutcome 收尾
+ */
+export function resolveUploadedSession(input: {
+  open: boolean;
+  tailKind: string;
+  outcome: SessionOutcome;
+}): { open: boolean; status: UploadedSessionStatus; outcome: SessionOutcome } {
+  if (input.open) {
+    return {
+      open: true,
+      status: input.tailKind === "answer" ? "waiting" : "active",
+      outcome: "",
+    };
+  }
+  return {
+    open: false,
+    status: input.outcome === "failed" ? "error" : "completed",
+    outcome: input.outcome,
+  };
+}

@@ -284,9 +284,15 @@ export default function NewExperimentPage() {
                           </div>
                         </div>
                         <Badge
-                          variant={session.status === "completed" ? "outline" : "destructive"}
+                          variant={session.status === "error" ? "destructive" : "outline"}
                         >
-                          {session.status}
+                          {session.status === "active"
+                            ? "进行中"
+                            : session.status === "waiting"
+                              ? "等待反馈"
+                              : session.status === "error"
+                                ? "异常"
+                                : "完成"}
                         </Badge>
                       </button>
                     ))}

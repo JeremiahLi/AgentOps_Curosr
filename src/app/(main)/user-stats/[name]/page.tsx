@@ -235,6 +235,11 @@ export default function UserDrilldownPage() {
                           <span className="h-1 w-1 rounded-full bg-info" />
                           进行中
                         </span>
+                      ) : s.status === "waiting" ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-sm bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">
+                          <span className="h-1 w-1 rounded-full bg-warning" />
+                          等待反馈
+                        </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 rounded-sm bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success">
                           <span className="h-1 w-1 rounded-full bg-success" />

@@ -88,7 +88,7 @@ export interface Session {
   projectId: string;
   userId: string;
   agentId: string;
-  status: "active" | "completed" | "error";
+  status: "active" | "waiting" | "completed" | "error";
   rounds: Round[];
   startTime: number;
   totalRounds: number;

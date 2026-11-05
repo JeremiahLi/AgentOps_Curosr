@@ -371,8 +371,8 @@ function sessionMetricCte(
       ) k ON k.sessionId = s.id
       WHERE s.startTime >= ${fromMs} AND s.startTime < ${toMs}
         ${agentCond}
-        -- 与成功率分母同口径：未收尾的 active 与空会话不参与基准
-        AND s.status <> 'active'
+        -- 与成功率分母同口径：还在跑、等人类反馈的会话，以及空会话，不参与基准
+        AND s.status NOT IN ('active', 'waiting')
         AND s.totalSpans > 0
     )
   `;

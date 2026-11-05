@@ -254,10 +254,10 @@ export default function SessionBoardPage() {
     // Tool & Skill 看板下钻：只保留命中该工具/Skill 的会话
     if (tagIds) result = result.filter((s) => tagIds.has(s.id));
     if (statusFilter !== "all") {
-      // 按终态筛选：success/partial/failed 走 outcome，active 走 status
+      // 未收尾走 status（进行中 / 等待反馈），终态走 outcome
       result =
-        statusFilter === "active"
-          ? result.filter((s) => s.status === "active")
+        statusFilter === "active" || statusFilter === "waiting"
+          ? result.filter((s) => s.status === statusFilter)
           : result.filter((s) => s.outcome === statusFilter);
     }
     if (errorsOnly) result = result.filter((s) => s.errorCount > 0);
@@ -749,16 +749,20 @@ export default function SessionBoardPage() {
               {(v) =>
                 v === "all" || !v
                   ? "全部状态"
-                  : ({ active: "进行中", success: "成功", partial: "部分成功", failed: "失败" } as Record<
-                      string,
-                      string
-                    >)[String(v)] ?? String(v)
+                  : ({
+                      active: "进行中",
+                      waiting: "等待反馈",
+                      success: "成功",
+                      partial: "部分成功",
+                      failed: "失败",
+                    } as Record<string, string>)[String(v)] ?? String(v)
               }
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部状态</SelectItem>
             <SelectItem value="active">进行中</SelectItem>
+            <SelectItem value="waiting">等待反馈</SelectItem>
             <SelectItem value="success">成功</SelectItem>
             <SelectItem value="partial">部分成功</SelectItem>
             <SelectItem value="failed">失败</SelectItem>
@@ -875,7 +879,10 @@ export default function SessionBoardPage() {
           表头 sticky 只能相对最近的纵向滚动容器生效，所以这个 max-h 容器必须保留；
           去掉它会让 Table 自带的 overflow-x-auto 成为滚动容器，sticky 静默失效。
         */}
-        <div className="max-h-[min(70vh,720px)] overflow-auto scrollbar-thin">
+        <div
+          className="max-h-[min(70vh,720px)] overflow-auto scrollbar-thin"
+          data-preserve-scroll="session-list"
+        >
           <Table className="table-fixed">
             <TableHeader className="sticky top-0 z-10">
               <TableRow className="bg-card hover:bg-card">

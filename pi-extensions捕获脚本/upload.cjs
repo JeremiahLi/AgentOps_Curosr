@@ -20,7 +20,7 @@ const FILE_STATS_KEY = '__files__';
 // 派生算法版本：mergeToolCalls / buildSessionPayload / 时间锚点修正等派生逻辑变更时必须 +1。
 // 作用：读前预检（stat 没变就跳过读盘）会绕过签名重算，若没有版本号，
 // 派生算法升级后存量会话将被永远跳过、无法自动重传。版本号不匹配 → 强制全量重读重算。
-const DERIVE_VERSION = 4;
+const DERIVE_VERSION = 6;
 
 // 检查点条目保留时长（天），超过则视为陈旧并剪枝；可用环境变量覆盖
 const CHECKPOINT_TTL_MS =
@@ -364,6 +364,51 @@ function isPidAlive(pid) {
   try { process.kill(n, 0); return true; } catch { return false; }
 }
 
+// 末条实质 span。answer = 这一轮已经停下（多半在等人类看中间结果）；其它 = 还在跑。
+// 与 src/lib/engine/ingest/derive.ts 的 resolveUploadedSession 对齐：tailKind === 'answer' → waiting。
+var SUBSTANTIVE_KIND = {
+  user: 1, answer: 1, llm_thinking: 1, tool_call: 1, command: 1, error: 1,
+};
+function tailKindOf(records) {
+  // 用记录写入时刻，不用 span 上被回移过的 createdAt。
+  // 同一次 message_end 会连写 llm_thinking 和 answer，时间戳经常相同；
+  // 按 spanId 排序会把思考排到回答后面，把「已停下等反馈」误判成还在跑。
+  var bestT = '';
+  var bestKind = '';
+  var answerAtBest = false;
+  for (var i = 0; i < records.length; i++) {
+    var r = records[i];
+    if (!r || !SUBSTANTIVE_KIND[r.kind]) continue;
+    var t = r.t || '';
+    if (t > bestT) {
+      bestT = t;
+      bestKind = r.kind;
+      answerAtBest = r.kind === 'answer';
+    } else if (t === bestT && r.kind === 'answer') {
+      answerAtBest = true;
+    }
+  }
+  return answerAtBest ? 'answer' : bestKind;
+}
+
+function hasSessionShutdown(records) {
+  for (var i = 0; i < records.length; i++) {
+    if (records[i] && records[i].kind === 'session_shutdown') return true;
+  }
+  return false;
+}
+
+function checkpointEntry(sig, open, piPid, tail) {
+  return {
+    sig: sig,
+    v: DERIVE_VERSION,
+    updatedAt: new Date().toISOString(),
+    open: !!open,
+    piPid: piPid || null,
+    tail: tail || '',
+  };
+}
+
 // 直接对内容做哈希：rawData 是全量记录的序列化，spans 是由记录派生的 span 列表。
 // 两者均不含运行时刻（endedAt=now 除外），内容不变则签名恒定、内容一变则签名必变。
 // spans 纳入签名：派生算法（如时间锚点修正）变更时签名随之变化，触发存量会话自动重传。
@@ -524,10 +569,18 @@ async function processSession(jsonlFile, backendUrl, ckpt) {
 
   const sessionFiles = listSessionFiles(projectIdDir, filePattern);
 
-  // 读前预检：stat 全部没变 + 已有同版本签名 → 不读盘直接跳过
+  // 读前预检：stat 全部没变 + 已有同版本签名 → 不读盘直接跳过。
+  // 例外：上次上传时进程还活着，现在 pid 没了，文件却没再增长（强杀、没写出 shutdown）。
+  // 这种要重读，把会话收成终态，不能一直停在「进行中 / 等待反馈」。
   if (prevVersionOk && prevSig && filesUnchanged(sessionFiles, getFileStatsMap(ckpt))) {
-    log('upload.skip statsUnchanged sessionId=' + sessionId + ' files=' + sessionFiles.length);
-    return 'skipped';
+    const prevOpen = !!(prevEntry && typeof prevEntry === 'object' && prevEntry.open === true);
+    const prevPid = prevEntry && typeof prevEntry === 'object' ? prevEntry.piPid : null;
+    if (prevOpen && !isPidAlive(prevPid)) {
+      log('upload.recheck processExited sessionId=' + sessionId + ' piPid=' + prevPid);
+    } else {
+      log('upload.skip statsUnchanged sessionId=' + sessionId + ' files=' + sessionFiles.length);
+      return 'skipped';
+    }
   }
 
   // 读前快照 stat（必须在读取前取，原因见函数注释）
@@ -542,26 +595,41 @@ async function processSession(jsonlFile, backendUrl, ckpt) {
   if (records.length === 0) { log('upload.skip empty'); return 'empty'; }
 
   const session = buildSessionPayload(records);
-  log('upload.payload sessionID=' + session.sessionID + ' spans=' + session.spans.length + ' piPid=' + session.piPid);
+  // 进程还在、且没有 session_shutdown：会话没结束。末条若是 answer，只是停下来等人类。
+  const piAlive = isPidAlive(session.piPid);
+  const shutdown = hasSessionShutdown(records);
+  session.open = !shutdown && piAlive;
+  session.tailKind = tailKindOf(records);
+  log('upload.payload sessionID=' + session.sessionID + ' spans=' + session.spans.length
+    + ' piPid=' + session.piPid + ' alive=' + piAlive + ' shutdown=' + shutdown
+    + ' open=' + session.open + ' tail=' + session.tailKind);
 
   const sig = computeSignature(session);
+  const prevOpen = prevEntry && typeof prevEntry === 'object' && typeof prevEntry.open === 'boolean'
+    ? prevEntry.open
+    : null;
+  const prevTail = prevEntry && typeof prevEntry === 'object' && typeof prevEntry.tail === 'string'
+    ? prevEntry.tail
+    : null;
   if (prevSig && prevSig === sig) {
-    // 内容没变（可能只是 mtime 抖动 / 首次迁移补 stat）：
-    // 会话条目升级到当前派生版本并记录 stat，下次即可走预检跳过、不再读盘
-    ckpt[sessionId] = { sig: sig, v: DERIVE_VERSION, updatedAt: new Date().toISOString() };
-    recordFileStats(ckpt, snap);
-    saveCheckpoint(ckpt);
-    log('upload.skip checkpoint unchanged sessionId=' + sessionId + ' sig=' + sig);
-    return 'skipped';
+    // 内容没变。已收尾的旧检查点（没有 open 字段）保持原终态，不把历史会话重传一遍。
+    // 还开着的会话，开/关状态变了，或末条从「还在跑」变成「等反馈」，必须再传一次。
+    const sameOpen = prevOpen === session.open || (prevOpen === null && session.open === false);
+    const sameTail = !session.open || prevTail === session.tailKind;
+    if (sameOpen && sameTail) {
+      ckpt[sessionId] = checkpointEntry(sig, session.open, session.piPid, session.tailKind);
+      recordFileStats(ckpt, snap);
+      saveCheckpoint(ckpt);
+      log('upload.skip checkpoint unchanged sessionId=' + sessionId + ' sig=' + sig + ' open=' + session.open);
+      return 'skipped';
+    }
+    log('upload.lifecycleChanged sessionId=' + sessionId + ' open=' + session.open + ' prevOpen=' + prevOpen + ' tail=' + session.tailKind);
   }
-
-  const piAlive = isPidAlive(session.piPid);
-  log('upload.pidCheck piPid=' + session.piPid + ' alive=' + piAlive);
 
   const res = await postJson(backendUrl, session);
   if (res.ok) {
     log('upload.success status=' + res.status + ' body=' + String(res.body).slice(0, 200));
-    ckpt[sessionId] = { sig: sig, v: DERIVE_VERSION, updatedAt: new Date().toISOString() };
+    ckpt[sessionId] = checkpointEntry(sig, session.open, session.piPid, session.tailKind);
     recordFileStats(ckpt, snap);
     saveCheckpoint(ckpt);
     log('upload.checkpointUpdated sessionId=' + sessionId + ' sig=' + sig);

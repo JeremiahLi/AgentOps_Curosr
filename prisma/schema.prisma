@@ -59,6 +59,7 @@ model Session {
   projectId        String
   userId           String
   agentId          String
+  /// active=还在跑；waiting=已停下等人类反馈；completed=已收尾；error=已收尾且未交付
   status           String   @default("active")
   /// 会话标题：首条用户诉求截断（采集端未提供时的派生值），空串表示尚未计算
   title            String   @default("")

@@ -32,22 +32,26 @@ export function StatusBadge({ status }: { status: "active" | "completed" | "erro
  * 与 StatusBadge 的分工：StatusBadge 表达「会话生命周期」（活跃/完成/异常），
  * OutcomeBadge 表达「有没有交付」——partial 单列一档，避免把「过程中踩坑但最终
  * 出了成品」和「真没交付」混成同一个失败统计（实测 pi 的会话里两者占比 1:5）。
- * outcome 为空串表示历史数据未回填，退回按 status 展示。
+ * outcome 为空串且会话已收尾，表示历史数据未回填，退回显示「完成」。
+ * waiting 是会话还开着、代理已停下等人类看中间结果，不是终态。
  */
 export function OutcomeBadge({ outcome, status }: { outcome: string; status: string }) {
-  const kind: "running" | "success" | "partial" | "failed" | "unknown" =
+  const kind: "running" | "waiting" | "success" | "partial" | "failed" | "unknown" =
     status === "active"
       ? "running"
-      : outcome === "success"
-        ? "success"
-        : outcome === "partial"
-          ? "partial"
-          : outcome === "failed"
-            ? "failed"
-            : "unknown";
+      : status === "waiting"
+        ? "waiting"
+        : outcome === "success"
+          ? "success"
+          : outcome === "partial"
+            ? "partial"
+            : outcome === "failed"
+              ? "failed"
+              : "unknown";
 
   const label = {
     running: "进行中",
+    waiting: "等待反馈",
     success: "成功",
     partial: "部分成功",
     failed: "失败",
@@ -57,15 +61,20 @@ export function OutcomeBadge({ outcome, status }: { outcome: string; status: str
   return (
     <span
       title={
-        kind === "partial"
-          ? "最终交付了产物，但过程中出现过失败（工具重试 / 质检回流）"
-          : kind === "failed"
-            ? "末轮回答失败或没有产出内容"
-            : undefined
+        kind === "running"
+          ? "采集进程还在，这一轮还没停"
+          : kind === "waiting"
+            ? "代理已停下，在等人类确认中间结果；会话还没结束"
+            : kind === "partial"
+              ? "最终交付了产物，但过程中出现过失败（工具重试 / 质检回流）"
+              : kind === "failed"
+                ? "末轮回答失败或没有产出内容"
+                : undefined
       }
       className={cn(
         "inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-[11px] font-medium",
         kind === "running" && "bg-success/10 text-success",
+        kind === "waiting" && "bg-warning/10 text-warning",
         kind === "success" && "bg-success/10 text-success",
         kind === "partial" && "bg-warning/10 text-warning",
         kind === "failed" && "bg-destructive/10 text-destructive",
@@ -75,7 +84,8 @@ export function OutcomeBadge({ outcome, status }: { outcome: string; status: str
       <span
         className={cn(
           "h-1 w-1 rounded-full",
-          kind === "running" && "bg-success",
+          kind === "running" && "bg-success animate-pulse",
+          kind === "waiting" && "bg-warning",
           kind === "success" && "bg-success",
           kind === "partial" && "bg-warning",
           kind === "failed" && "bg-destructive",

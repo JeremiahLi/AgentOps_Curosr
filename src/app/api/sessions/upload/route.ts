@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { computeOutcome, deriveAgentName, deriveTitle, workspaceLabel } from "@/lib/engine/ingest/derive";
+import { computeOutcome, deriveAgentName, deriveTitle, resolveUploadedSession, workspaceLabel } from "@/lib/engine/ingest/derive";
 import { recordSessionIssues } from "@/lib/engine/ingest/record-issues";
 import { bindRegressionSession, taskKeyOf } from "@/lib/engine/ingest/regression";
 import { resolveRelease } from "@/lib/engine/ingest/release";
@@ -23,6 +23,13 @@ export async function POST(request: Request) {
     parentSessionId?: string | null;
     startedAt?: string;
     endedAt?: string;
+    /**
+     * 采集进程仍在、且还没有 session_shutdown。
+     * 缺省视为已收尾（兼容不带该字段的旧采集端）。
+     */
+    open?: boolean;
+    /** open 时的末条实质 span。answer = 代理已停下等人类，其它 = 还在跑 */
+    tailKind?: string;
     model?: string;
     /** 人读版本号。缺省时仍从 session_start span 读 */
     agentVersion?: string;
@@ -381,8 +388,14 @@ function toIntOr(v: unknown, fallback: number): number {
       },
     });
 
-    // 终态以库内全量 span 为准（增量上传时本次 payload 往往只有尾部）
+    // 终态以库内全量 span 为准（增量上传时本次 payload 往往只有尾部）。
+    // 进程还活着时不落终态：中间回答只是停下来等反馈，不能把结果列写成完成。
     const { outcome } = computeOutcome(allSpans);
+    const uploaded = resolveUploadedSession({
+      open: body.open === true,
+      tailKind: typeof body.tailKind === "string" ? body.tailKind : "",
+      outcome,
+    });
     // 标题用库内全量算，已有值不覆盖（用户诉求不会变）
     const titleFromDb = existingSession?.title ? "" : deriveTitle(allSpans);
 
@@ -443,10 +456,10 @@ function toIntOr(v: unknown, fallback: number): number {
     const saved = await prisma.session.update({
       where: { id: sessionID },
       data: {
-        // status 由终态决定：只有真失败才置 error，partial 仍算完成（有交付）
-        status: outcome === "failed" ? "error" : "completed",
+        // 未收尾时 status 为 active / waiting，并清掉上一轮误写的终态 outcome
+        status: uploaded.status,
+        outcome: uploaded.outcome,
         ...(titleFromDb ? { title: titleFromDb } : {}),
-        ...(outcome ? { outcome } : {}),
         ...(shouldReassignAgent ? { agentId: agent.id } : {}),
         ...(keepStoredRelease ? {} : { releaseId: release.id }),
         ...(existingSession?.taskKey || !nextTaskKey ? {} : { taskKey: nextTaskKey }),
@@ -470,15 +483,18 @@ function toIntOr(v: unknown, fallback: number): number {
       select: { agentId: true, releaseId: true },
     });
 
-    try {
-      await recordSessionIssues(prisma, {
-        agentId: saved.agentId,
-        sessionId: sessionID,
-        releaseId: saved.releaseId,
-        source: "upload",
-      });
-    } catch (issueErr) {
-      console.error("[upload] issue record failed", issueErr);
+    // 还在跑或等反馈时不记「未交付」：末条 answer 只是中间结果，会话并没有结束
+    if (!uploaded.open) {
+      try {
+        await recordSessionIssues(prisma, {
+          agentId: saved.agentId,
+          sessionId: sessionID,
+          releaseId: saved.releaseId,
+          source: "upload",
+        });
+      } catch (issueErr) {
+        console.error("[upload] issue record failed", issueErr);
+      }
     }
 
     if (bindCaseId) {
@@ -514,7 +530,8 @@ function toIntOr(v: unknown, fallback: number): number {
       ok: true,
       sessionId: sessionID,
       agent: agent.name,
-      outcome,
+      outcome: uploaded.outcome,
+      status: uploaded.status,
       totalSpans: allSpans.length,
       insertedNew: insertedCount,
     });

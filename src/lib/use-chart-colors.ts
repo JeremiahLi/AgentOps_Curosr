@@ -169,7 +169,7 @@ export function useOutcomePalette(): Record<OutcomeKey, string> {
 
 /** 把后端 outcome 字符串收敛成四个绘图键 */
 export function normalizeOutcome(outcome: string, status?: string): OutcomeKey {
+  if (status === "active" || status === "waiting") return "unknown";
   if (outcome === "success" || outcome === "partial" || outcome === "failed") return outcome;
-  if (status === "active") return "unknown";
   return "unknown";
 }
