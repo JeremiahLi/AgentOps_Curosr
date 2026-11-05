@@ -2,6 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useCallback } from "react";
+import { canReturnInApp } from "@/components/shell/preserve-main-scroll";
 import { SessionDetailView } from "@/components/trace/session-detail-view";
 
 /**
@@ -16,13 +17,9 @@ export default function SessionDetailPage() {
   const sessionId = String(params.traceId ?? "");
 
   const handleBack = useCallback(() => {
-    // 从站内跳进来的才 back（保留来源页的筛选/页码体验）；
-    // 新标签页或外站直达没有可回的历史，退回列表页
-    const sameOriginReferrer =
-      typeof document !== "undefined" &&
-      document.referrer.startsWith(window.location.origin) &&
-      window.history.length > 1;
-    if (sameOriginReferrer) router.back();
+    // document.referrer 只反映整页加载来源，站内从看板点进来时它往往是空的。
+    // 客户端跳转过才 back，这样能回到进入前的滚动位置；直链打开则去列表。
+    if (canReturnInApp()) router.back();
     else router.push("/trace");
   }, [router]);
 

@@ -15,18 +15,18 @@ function pageKey(pathname: string) {
   return pathname + window.location.search;
 }
 
-function dbg(message: string) {
-  const w = window as Window & { __scrollDebug?: string[] };
-  const log = (w.__scrollDebug ??= []);
-  log.push(message);
-  if (log.length > 40) log.shift();
+let pendingPop = false;
+/** 当前文档里发生过客户端跳转。直链打开详情时为 false，返回应去列表而不是跳出站点。 */
+let clientNavigated = false;
+
+export function canReturnInApp() {
+  return clientNavigated && window.history.length > 1;
 }
 
 export function PreserveMainScroll({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const mainRef = useRef<HTMLElement>(null);
   const keyRef = useRef("");
-  const popRef = useRef(false);
   const ignoreRef = useRef(false);
   const dragRef = useRef(false);
   const pointerRef = useRef(false);
@@ -42,7 +42,6 @@ export function PreserveMainScroll({ children }: { children: ReactNode }) {
       if (ignoreRef.current) return;
       const key = keyRef.current;
       if (!key) return;
-      dbg(`snap ${key} main=${main.scrollTop}`);
       mainPositions.set(key, main.scrollTop);
       for (const node of main.querySelectorAll<HTMLElement>("[data-preserve-scroll]")) {
         const id = node.getAttribute("data-preserve-scroll");
@@ -102,7 +101,7 @@ export function PreserveMainScroll({ children }: { children: ReactNode }) {
       }
     };
     const onPop = () => {
-      popRef.current = true;
+      pendingPop = true;
     };
 
     main.addEventListener("scroll", onScroll, true);
@@ -133,10 +132,10 @@ export function PreserveMainScroll({ children }: { children: ReactNode }) {
     const main = mainRef.current;
     if (!main) return;
     const key = pageKey(pathname);
-    const isPop = popRef.current;
-    popRef.current = false;
+    const isPop = pendingPop;
+    pendingPop = false;
+    if (keyRef.current && keyRef.current !== key) clientNavigated = true;
     keyRef.current = key;
-    dbg(`nav ${key} pop=${isPop} saved=${mainPositions.get(key) ?? "none"}`);
     if (!isPop) return;
 
     const y = mainPositions.get(key) ?? 0;
